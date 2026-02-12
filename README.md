@@ -293,17 +293,43 @@ The tool:
 
 ```bash
 # Pack
-dotnet pack -c Release
+dotnet pack src/NSSharp/NSSharp.csproj -c Release
 
-# Install globally
-dotnet tool install --global --add-source ./bin/Release NSSharp
+# Install globally from local package
+dotnet tool install --global --add-source src/NSSharp/bin/Release NSSharp
+
+# Or install from NuGet (once published)
+dotnet tool install --global NSSharp
 
 # Use
 nssharp MyHeader.h
 nssharp MyHeader.h -o ApiDefinition.cs
 nssharp --xcframework MyLib.xcframework -o Bindings.cs
 nssharp MyHeader.h -f json -o output.json
+
+# Uninstall
+dotnet tool uninstall --global NSSharp
 ```
+
+## Versioning & CI
+
+Versioning is handled by [Nerdbank.GitVersioning](https://github.com/dotnet/Nerdbank.GitVersioning) with CalVer-style release tags:
+
+- **Dev builds**: Automatically versioned as `0.1.{git-height}-g{commit}` (prerelease)
+- **Releases**: Create a GitHub release with a CalVer tag (e.g. `2026.02.12.1`) — the tag becomes the NuGet package version
+
+GitHub Actions CI (`.github/workflows/ci.yml`):
+
+| Trigger | Build & Pack | Test | Publish to NuGet |
+|---|---|---|---|
+| Push to `main` | ✅ | ✅ | ❌ |
+| Pull request | ✅ | ✅ | ❌ |
+| GitHub release | ✅ | ❌ | ✅ |
+
+To publish a release:
+1. Create a GitHub release with a CalVer tag (e.g. `2026.02.12.1`)
+2. CI builds, packs with that version, and pushes to NuGet.org
+3. Requires `NUGET_ORG_API_KEY` repository secret
 
 ## AI Agent Skills
 
@@ -322,6 +348,10 @@ Each skill follows the progressive disclosure pattern — the `SKILL.md` body lo
 NSSharp/
 ├── NSSharp.slnx
 ├── README.md
+├── AGENTS.md
+├── global.json                         # .NET 10 SDK pin
+├── version.json                        # Nerdbank.GitVersioning (CalVer)
+├── .github/workflows/ci.yml           # CI: build, test, publish
 ├── .agents/skills/
 │   ├── nssharp-objc-parser/        # Skill for parsing ObjC headers
 │   │   ├── SKILL.md

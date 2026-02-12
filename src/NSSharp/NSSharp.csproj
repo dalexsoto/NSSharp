@@ -5,18 +5,43 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <RollForward>Major</RollForward>
     <DefaultItemExcludes>$(DefaultItemExcludes);NSSharp.Tests/**</DefaultItemExcludes>
 
     <!-- dotnet tool packaging -->
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>nssharp</ToolCommandName>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <PackageId>NSSharp</PackageId>
-    <Version>0.1.0</Version>
-    <Description>Objective-C header parser that outputs JSON for interop code generation.</Description>
+    <Title>NSSharp - Objective-C Header Parser &amp; C# Binding Generator</Title>
+    <Description>A .NET CLI tool that parses Objective-C headers and generates C# binding definitions (Xamarin.iOS / .NET for iOS style) or structured JSON output. No libclang required.</Description>
+    <Authors>dalexsoto</Authors>
+    <PackageProjectUrl>https://github.com/dalexsoto/NSSharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/dalexsoto/NSSharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>objc;objective-c;binding;xamarin;maui;ios;parser;dotnet-tool</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <DebugType>portable</DebugType>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta5.25306.1" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+    <PackageReference Include="Nerdbank.GitVersioning" Version="3.7.115" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>

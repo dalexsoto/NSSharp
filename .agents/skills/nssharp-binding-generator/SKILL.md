@@ -10,17 +10,25 @@ Generate Xamarin/MAUI-style C# binding API definitions from Objective-C headers.
 ## Quick Start
 
 ```bash
-# C# bindings to stdout (default format)
+# Build and run during development
+dotnet build NSSharp.slnx
 dotnet run --project src/NSSharp -- MyHeader.h
 
+# Or install as a dotnet tool
+dotnet pack src/NSSharp/NSSharp.csproj -c Release
+dotnet tool install -g --add-source src/NSSharp/bin/Release NSSharp
+
+# C# bindings to stdout (default format)
+nssharp MyHeader.h
+
 # To file
-dotnet run --project src/NSSharp -- MyHeader.h -o ApiDefinition.cs
+nssharp MyHeader.h -o ApiDefinition.cs
 
 # From xcframework
-dotnet run --project src/NSSharp -- --xcframework MyLib.xcframework -o Bindings.cs
+nssharp --xcframework MyLib.xcframework -o Bindings.cs
 
 # Specific slice
-dotnet run --project src/NSSharp -- --xcframework MyLib.xcframework --slice ios-arm64 -o Bindings.cs
+nssharp --xcframework MyLib.xcframework --slice ios-arm64 -o Bindings.cs
 ```
 
 ## Binding Rules

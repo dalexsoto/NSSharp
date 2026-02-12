@@ -13,23 +13,28 @@ Parse Objective-C headers into structured JSON or AST using the NSSharp .NET 10 
 # Build (from repo root)
 dotnet build NSSharp.slnx
 
-# Parse a header to C# bindings (default)
+# Or install as a dotnet tool
+dotnet pack src/NSSharp/NSSharp.csproj -c Release
+dotnet tool install -g --add-source src/NSSharp/bin/Release NSSharp
+
+# Parse a header to C# bindings (default) — via dotnet run or installed tool
 dotnet run --project src/NSSharp -- MyHeader.h
+nssharp MyHeader.h
 
 # Parse to JSON
-dotnet run --project src/NSSharp -- MyHeader.h -f json
+nssharp MyHeader.h -f json
 
 # Parse to file
-dotnet run --project src/NSSharp -- MyHeader.h -f json -o output.json
+nssharp MyHeader.h -f json -o output.json
 
 # Parse xcframework
-dotnet run --project src/NSSharp -- --xcframework MyLib.xcframework -f json
+nssharp --xcframework MyLib.xcframework -f json
 
 # List xcframework slices
-dotnet run --project src/NSSharp -- --xcframework MyLib.xcframework --list-slices
+nssharp --xcframework MyLib.xcframework --list-slices
 
 # Parse specific slice
-dotnet run --project src/NSSharp -- --xcframework MyLib.xcframework --slice ios-arm64 -f json
+nssharp --xcframework MyLib.xcframework --slice ios-arm64 -f json
 ```
 
 ## CLI Options

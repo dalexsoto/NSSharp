@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: 🔨 Build & Pack
+    runs-on: macos-latest
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+
+    - name: ⚙️ Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: 🏷️ Display Version
+      run: dotnet tool install -g nbgv && nbgv get-version
+
+    - name: 📦 Pack
+      run: |
+        mkdir -p ./artifacts
+        dotnet pack src/NSSharp/NSSharp.csproj --output ./artifacts --configuration Release
+
+    - name: 📤 Upload Artifacts
+      uses: actions/upload-artifact@v5
+      with:
+        name: NuGet
+        path: ./artifacts
+
+  test:
+    name: 🧪 Test
+    if: github.event_name != 'release'
+    needs: build
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+
+    - name: ⚙️ Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: 🧪 Run Tests
+      run: >
+        dotnet test NSSharp.slnx
+        --configuration Release
+        --logger "trx;LogFileName=test-results.trx"
+        --logger "console;verbosity=detailed"
+        --results-directory ./TestResults
+
+    - name: 📊 Publish Test Results
+      uses: dorny/test-reporter@v2
+      if: always()
+      with:
+        name: Test Results
+        path: './TestResults/*.trx'
+        reporter: dotnet-trx
+        fail-on-error: true
+
+  publish:
+    name: 🚀 Publish to NuGet
+    needs: build
+    runs-on: macos-latest
+    if: github.event_name == 'release'
+    steps:
+    - name: 📥 Download Artifacts
+      uses: actions/download-artifact@v5
+      with:
+        name: NuGet
+
+    - name: ⚙️ Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: 🚀 Push to NuGet
+      run: |
+        dotnet nuget push *.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_ORG_API_KEY }}
