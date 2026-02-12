@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/NSSharp/NSSharp.csproj" />
+  <Project Path="src/NSSharp.Tests/NSSharp.Tests.csproj" />
+</Solution>
