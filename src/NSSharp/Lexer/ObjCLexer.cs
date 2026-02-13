@@ -9,31 +9,30 @@ public sealed class ObjCLexer
     private int _line = 1;
     private int _col = 1;
 
-    // Macros we skip entirely (they consume balanced parens if present)
-    private static readonly HashSet<string> s_skipMacros =
+    // Structural macros that the parser needs — never auto-skip these
+    private static readonly HashSet<string> s_structuralMacros =
     [
+        "NS_ENUM", "NS_OPTIONS", "NS_CLOSED_ENUM", "NS_ERROR_ENUM",
         "NS_ASSUME_NONNULL_BEGIN", "NS_ASSUME_NONNULL_END",
-        "API_AVAILABLE", "API_UNAVAILABLE", "API_DEPRECATED",
-        "API_DEPRECATED_WITH_REPLACEMENT",
-        "NS_AVAILABLE", "NS_AVAILABLE_IOS", "NS_AVAILABLE_MAC",
-        "NS_DEPRECATED", "NS_DEPRECATED_IOS",
         "NS_DESIGNATED_INITIALIZER", "NS_REQUIRES_SUPER",
-        "NS_SWIFT_NAME", "NS_SWIFT_UNAVAILABLE", "NS_SWIFT_ASYNC",
-        "NS_SWIFT_ASYNC_NAME", "NS_SWIFT_UI_ACTOR",
-        "NS_REFINED_FOR_SWIFT", "NS_SWIFT_SENDABLE", "NS_SWIFT_NONSENDABLE",
-        "NS_HEADER_AUDIT_BEGIN", "NS_HEADER_AUDIT_END",
-        "NS_FORMAT_FUNCTION", "NS_FORMAT_ARGUMENT",
-        "NS_RETURNS_RETAINED", "NS_RETURNS_NOT_RETAINED",
-        "NS_RETURNS_INNER_POINTER",
-        "NS_NOESCAPE", "NS_CLOSED_ENUM",
-        "CF_ENUM_AVAILABLE", "CF_ENUM_DEPRECATED",
-        "__attribute__", "__unused", "__kindof",
-        "UIKIT_EXTERN", "FOUNDATION_EXTERN", "FOUNDATION_EXPORT",
-        "OBJC_EXPORT", "OBJC_ROOT_CLASS",
-        "NS_CLASS_AVAILABLE_IOS", "NS_CLASS_DEPRECATED_IOS",
-        "NS_EXTENSION_UNAVAILABLE", "NS_EXTENSION_UNAVAILABLE_IOS",
-        "CF_SWIFT_NAME",
     ];
+
+    // Known ALL_CAPS identifiers that are types/values, not macros
+    private static readonly HashSet<string> s_knownUppercaseTypes =
+    [
+        "BOOL", "SEL", "IMP", "NULL",
+        // C max-value constants used in enum values
+        "UINT8_MAX", "UINT16_MAX", "UINT32_MAX", "UINT64_MAX", "UINT_MAX",
+        "INT8_MAX", "INT16_MAX", "INT32_MAX", "INT64_MAX", "INT_MAX",
+        "CGFLOAT_MAX", "CGFLOAT_MIN",
+    ];
+
+    // User-supplied macros that map to extern (e.g. PSPDF_EXPORT, MY_EXPORT)
+    private readonly HashSet<string> _externMacros;
+    // User-supplied extra macros to always skip
+    private readonly HashSet<string> _extraSkipMacros;
+    // Whether to use the UPPER_SNAKE_CASE heuristic
+    private readonly bool _macroHeuristic;
 
     // Nullability qualifiers we keep as identifiers
     private static readonly HashSet<string> s_nullabilityKeywords =
@@ -43,9 +42,13 @@ public sealed class ObjCLexer
         "__nullable", "__nonnull",
     ];
 
-    public ObjCLexer(string source)
+    public ObjCLexer(string source, ObjCLexerOptions? options = null)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
+        options ??= ObjCLexerOptions.Default;
+        _externMacros = new HashSet<string>(options.ExternMacros);
+        _extraSkipMacros = new HashSet<string>(options.ExtraSkipMacros);
+        _macroHeuristic = options.MacroHeuristic;
     }
 
     public List<Token> Tokenize()
@@ -208,8 +211,8 @@ public sealed class ObjCLexer
         {
             var ident = ReadIdentifierRaw();
 
-            // Handle skip macros
-            if (s_skipMacros.Contains(ident))
+            // Handle user-supplied skip macros
+            if (_extraSkipMacros.Contains(ident))
             {
                 SkipWhitespace();
                 if (Peek() == '(')
@@ -217,7 +220,31 @@ public sealed class ObjCLexer
                 goto restart;
             }
 
-            // Map C keywords
+            // Compiler attributes with double-underscore prefix
+            if (ident == "__attribute__")
+            {
+                SkipWhitespace();
+                if (Peek() == '(')
+                    SkipBalancedParens();
+                goto restart;
+            }
+            if (ident is "__unused" or "__kindof")
+                goto restart;
+
+            // Extern-mapped macros (e.g. PSPDF_EXPORT → extern)
+            if (ident == "PSPDF_EXPORT" || _externMacros.Contains(ident))
+                return new Token(TokenKind.Extern, ident, startLine, startCol);
+
+            // UPPER_SNAKE_CASE heuristic: skip likely macros
+            if (_macroHeuristic && IsLikelyMacro(ident))
+            {
+                SkipWhitespace();
+                if (Peek() == '(')
+                    SkipBalancedParens();
+                goto restart;
+            }
+
+            // Map C/ObjC keywords
             return ident switch
             {
                 "typedef" => new Token(TokenKind.Typedef, ident, startLine, startCol),
@@ -229,6 +256,8 @@ public sealed class ObjCLexer
                 "extern" => new Token(TokenKind.Extern, ident, startLine, startCol),
                 "static" => new Token(TokenKind.Static, ident, startLine, startCol),
                 "inline" => new Token(TokenKind.Inline, ident, startLine, startCol),
+                "NS_ASSUME_NONNULL_BEGIN" => new Token(TokenKind.NonnullBegin, ident, startLine, startCol),
+                "NS_ASSUME_NONNULL_END" => new Token(TokenKind.NonnullEnd, ident, startLine, startCol),
                 _ => new Token(TokenKind.Identifier, ident, startLine, startCol),
             };
         }
@@ -269,6 +298,45 @@ public sealed class ObjCLexer
     {
         Advance(); Advance(); // consume the other two dots
         return new Token(TokenKind.Ellipsis, "...", line, col);
+    }
+
+    /// <summary>
+    /// Returns true if the identifier looks like a C preprocessor macro
+    /// based on UPPER_SNAKE_CASE naming convention.
+    /// Criteria: 3+ chars, all uppercase/digits/underscores, contains at least one underscore,
+    /// and is not a known type or structural macro.
+    /// </summary>
+    internal static bool IsLikelyMacro(string ident)
+    {
+        if (ident.Length < 3)
+            return false;
+
+        // Must not be a structural macro the parser needs
+        if (s_structuralMacros.Contains(ident))
+            return false;
+
+        // Must not be a known type
+        if (s_knownUppercaseTypes.Contains(ident))
+            return false;
+
+        // Check: all chars are uppercase, digit, or underscore
+        bool hasUnderscore = false;
+        bool hasLetter = false;
+        foreach (var c in ident)
+        {
+            if (c == '_')
+                hasUnderscore = true;
+            else if (c >= 'A' && c <= 'Z')
+                hasLetter = true;
+            else if (c >= '0' && c <= '9')
+                { } // digits ok
+            else
+                return false; // lowercase or other char → not a macro
+        }
+
+        // Require at least one underscore (e.g. NS_ENUM pattern) and one letter
+        // Single-word ALL_CAPS without underscore (e.g. "BOOL") are handled by s_knownUppercaseTypes
+        return hasUnderscore && hasLetter;
     }
 
     private string ReadIdentifierRaw()

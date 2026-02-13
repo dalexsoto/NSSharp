@@ -57,9 +57,12 @@ All types are in `NSSharp.Ast` namespace, defined in `src/NSSharp/Ast/ObjCNodes.
   "name": "title",
   "type": "NSString *",
   "attributes": ["nonatomic", "copy", "nullable"],
-  "isNullable": true
+  "isNullable": true,
+  "inNonnullScope": true
 }
 ```
+
+- `inNonnullScope`: true if declared between `NS_ASSUME_NONNULL_BEGIN` and `NS_ASSUME_NONNULL_END`
 
 ### ObjCMethod
 
@@ -71,9 +74,14 @@ All types are in `NSSharp.Ast` namespace, defined in `src/NSSharp/Ast/ObjCNodes.
     { "name": "title", "type": "NSString *", "isNullable": false },
     { "name": "count", "type": "NSInteger", "isNullable": false }
   ],
-  "isOptional": false
+  "isOptional": false,
+  "inNonnullScope": true,
+  "isReturnNullable": false
 }
 ```
+
+- `inNonnullScope`: true if declared between `NS_ASSUME_NONNULL_BEGIN` and `NS_ASSUME_NONNULL_END`
+- `isReturnNullable`: true if return type has nullable annotation
 
 ### ObjCEnum
 

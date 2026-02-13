@@ -41,6 +41,8 @@ public sealed class ObjCProperty
     public string Type { get; set; } = string.Empty;
     public List<string> Attributes { get; set; } = [];
     public bool IsNullable { get; set; }
+    public bool InNonnullScope { get; set; }
+    public bool IsOptional { get; set; }
 }
 
 public sealed class ObjCMethod
@@ -49,6 +51,9 @@ public sealed class ObjCMethod
     public string ReturnType { get; set; } = string.Empty;
     public List<ObjCParameter> Parameters { get; set; } = [];
     public bool IsOptional { get; set; }
+    public bool IsReturnNullable { get; set; }
+    public bool InNonnullScope { get; set; }
+    public bool IsDesignatedInitializer { get; set; }
 }
 
 public sealed class ObjCParameter

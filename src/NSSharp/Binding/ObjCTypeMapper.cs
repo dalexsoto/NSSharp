@@ -6,9 +6,32 @@ namespace NSSharp.Binding;
 /// </summary>
 public static class ObjCTypeMapper
 {
+    private static Dictionary<string, string> s_typedefMap = new(StringComparer.Ordinal);
+
+    /// <summary>Sets the typedef resolution map from parsed headers.</summary>
+    public static void SetTypedefMap(Dictionary<string, string> typedefMap)
+    {
+        s_typedefMap = typedefMap;
+    }
+
+    /// <summary>Resolves a typedef name to its underlying base type.</summary>
+    private static string ResolveTypedef(string typeName)
+    {
+        // Chase typedef chains (e.g., PSPDFPageIndex → NSUInteger → nuint)
+        var seen = new HashSet<string>();
+        var current = typeName;
+        while (s_typedefMap.TryGetValue(current, out var underlying) && seen.Add(current))
+        {
+            // Strip pointer from underlying for resolution, re-add later
+            current = underlying.TrimEnd(' ', '*');
+        }
+        return current;
+    }
+
     private static readonly Dictionary<string, string> s_primitiveMap = new(StringComparer.Ordinal)
     {
         ["void"] = "void",
+        ["IBAction"] = "void",
         ["BOOL"] = "bool",
         ["bool"] = "bool",
         ["_Bool"] = "bool",
@@ -120,9 +143,12 @@ public static class ObjCTypeMapper
         bool isConst = type.StartsWith("const ");
         if (isConst)
             type = type["const ".Length..].Trim();
+        // Also strip trailing const (e.g., "PSPDFDocumentSharingDestination const")
+        if (type.EndsWith(" const"))
+            type = type[..^" const".Length].Trim();
 
-        // Handle block types: returnType (^)(params)
-        if (type.Contains("(^)"))
+        // Handle block types: returnType (^)(params) or spaced ( ^ )
+        if (type.Contains("(^)") || type.Contains("( ^ )"))
             return MapBlockType(type);
 
         // Count and strip pointer stars
@@ -140,6 +166,15 @@ public static class ObjCTypeMapper
             return "out " + innerType;
         }
 
+        // Resolve typedefs to base types (e.g., PSPDFPageIndex → NSUInteger → nuint)
+        var resolvedType = ResolveTypedef(type);
+        if (resolvedType != type)
+        {
+            // Re-map with resolved type, preserving pointer depth
+            var suffix = pointerDepth > 0 ? new string('*', pointerDepth) : "";
+            return MapType(resolvedType + (suffix.Length > 0 ? " " + suffix : ""));
+        }
+
         // Check primitive map
         if (s_primitiveMap.TryGetValue(type, out var mapped))
         {
@@ -152,18 +187,49 @@ public static class ObjCTypeMapper
         if (s_nsToCs.TryGetValue(type, out var nsType))
             return nsType;
 
-        // Handle id<Protocol>
-        if (type.StartsWith("id<") && type.EndsWith(">"))
+        // Handle id<Protocol> and id < Protocol > (with spaces)
+        var idCheck = type.Replace(" ", "");
+        if (idCheck.StartsWith("id<") && idCheck.EndsWith(">"))
         {
-            var protoName = type[3..^1].Trim();
+            var protoName = idCheck[3..^1].Trim();
+            // For multiple protocols, use the first one
+            if (protoName.Contains(','))
+                protoName = protoName.Split(',')[0].Trim();
             return "I" + protoName;
         }
 
-        // Handle generics: NSArray<NSString *>
+        // Handle generics: NSArray<PSPDFAnnotation *> → PSPDFAnnotation[]
         if (type.Contains('<'))
         {
-            var baseType = type[..type.IndexOf('<')].Trim();
-            // For binding purposes, return the base type
+            var ltIdx = type.IndexOf('<');
+            var gtIdx = type.LastIndexOf('>');
+            var baseType = type[..ltIdx].Trim();
+            var genericParam = (gtIdx > ltIdx) ? type[(ltIdx + 1)..gtIdx].Trim() : "";
+
+            // NSArray<Type *> → Type[]
+            if (baseType is "NSArray" or "NSMutableArray" && !string.IsNullOrEmpty(genericParam))
+            {
+                var elementType = MapType(genericParam);
+                return elementType + " []";
+            }
+
+            // NSDictionary<K, V> → just NSDictionary for now
+            // NSSet<T> → just NSSet for now
+
+            // ClassName<Protocol> (e.g., UIView<PSPDFAnnotationPresenting>) → IProtocol
+            // When a non-collection class conforms to a protocol, use the protocol interface
+            string[] collectionTypes = ["NSDictionary", "NSMutableDictionary", "NSSet", "NSMutableSet",
+                "NSOrderedSet", "NSMutableOrderedSet", "NSMapTable", "NSHashTable"];
+            if (!string.IsNullOrEmpty(genericParam) && !genericParam.Contains("*")
+                && !Array.Exists(collectionTypes, ct => ct == baseType))
+            {
+                var cleanParam = genericParam.Trim();
+                if (cleanParam.Contains(','))
+                    cleanParam = cleanParam.Split(',')[0].Trim();
+                return "I" + cleanParam;
+            }
+
+            // Other generics: return the base type
             return MapType(baseType + (pointerDepth > 0 ? " *" : ""));
         }
 
@@ -173,6 +239,10 @@ public static class ObjCTypeMapper
             if (isConst) return "string";
             return "unsafe sbyte*";
         }
+
+        // Rename Block typedefs to Handler (.NET convention)
+        if (type.EndsWith("Block", StringComparison.Ordinal) && type.Length > "Block".Length)
+            type = type[..^"Block".Length] + "Handler";
 
         // Default: use the ObjC name as-is (likely a custom type)
         return type;
@@ -196,8 +266,12 @@ public static class ObjCTypeMapper
             "unsigned long long" => "ulong",
             "int64_t" => "long",
             "uint64_t" => "ulong",
-            "uint8_t" => "byte",
-            "int8_t" => "sbyte",
+            "uint8_t" or "UInt8" => "byte",
+            "int8_t" or "SInt8" => "sbyte",
+            "uint16_t" or "UInt16" => "ushort",
+            "int16_t" or "SInt16" => "short",
+            "uint32_t" or "UInt32" => "uint",
+            "int32_t" or "SInt32" => "int",
             _ => "uint",
         };
     }
@@ -213,13 +287,14 @@ public static class ObjCTypeMapper
     {
         // Very simplified: just return Action/Func for common patterns
         // Full implementation would parse the block signature
-        return "Action /* block type */";
+        return "Action";
     }
 
     private static string StripNullability(string type)
     {
         string[] annotations = ["_Nullable", "_Nonnull", "_Null_unspecified",
-            "__nullable", "__nonnull", "nullable", "nonnull", "null_unspecified"];
+            "__nullable", "__nonnull", "nullable", "nonnull", "null_unspecified",
+            "__strong", "__weak", "__unsafe_unretained", "__autoreleasing"];
         foreach (var ann in annotations)
         {
             type = type.Replace(ann, "").Trim();
@@ -236,19 +311,157 @@ public static class ObjCTypeMapper
             or "nint" or "nuint" or "nfloat" or "bool" or "char";
 
     /// <summary>Converts an ObjC selector to a PascalCase C# method name.</summary>
-    public static string SelectorToMethodName(string selector)
+    public static string SelectorToMethodName(string selector, bool isProtocolMethod = false)
     {
         if (string.IsNullOrEmpty(selector)) return selector;
 
-        // Remove trailing colons and split on ':'
+        // Single-part selector (no colons) → PascalCase
+        if (!selector.Contains(':'))
+            return PascalCase(selector);
+
         var parts = selector.TrimEnd(':').Split(':');
-        return string.Join("", parts.Select(PascalCase));
+
+        // Protocol/delegate methods: strip the first part if it looks like a sender parameter
+        // e.g., "annotationGridViewController:didSelectAnnotationSet:" → use second part onward
+        if (isProtocolMethod && parts.Length >= 2)
+        {
+            var firstPart = parts[0];
+            if (IsSenderParameterName(firstPart))
+            {
+                parts = parts[1..];
+            }
+        }
+
+        // Protocol single-part selectors: strip embedded sender prefix
+        // e.g., "annotationGridViewControllerDidCancel:" → "DidCancel"
+        if (isProtocolMethod && parts.Length == 1)
+        {
+            var stripped = StripEmbeddedSenderPrefix(parts[0]);
+            if (stripped != null)
+                return PascalCase(StripTrailingParameterContext(stripped));
+        }
+
+        // Use only the first part (PascalCased), with trailing parameter context stripped
+        return PascalCase(StripTrailingParameterContext(parts[0]));
     }
 
-    /// <summary>Converts a name to PascalCase.</summary>
+    /// <summary>
+    /// Strips trailing parameter context from a selector part.
+    /// e.g., "configureWithDocument" → "configure", "cancelSearchAnimated" → "cancelSearch"
+    /// </summary>
+    internal static string StripTrailingParameterContext(string part, bool isProtocolSecondPart = false)
+    {
+        // Generic preposition patterns: With*, At*, For*, From*, In*, On*, Of* + uppercase
+        // e.g., "configureWithDocument" → "configure", "canActivateAtPoint" → "canActivate"
+        string[] prepositions = ["With", "At", "For", "From", "In", "On", "Of"];
+        foreach (var prep in prepositions)
+        {
+            int idx = part.LastIndexOf(prep, StringComparison.Ordinal);
+            if (idx > 0 && idx + prep.Length < part.Length && char.IsUpper(part[idx + prep.Length]))
+            {
+                return part[..idx];
+            }
+        }
+
+        // Strip trailing "Animated" (common in UIKit-style APIs)
+        if (part.EndsWith("Animated", StringComparison.Ordinal) && part.Length > "Animated".Length)
+            return part[..^"Animated".Length];
+
+        return part;
+    }
+
+    /// <summary>Converts a name to PascalCase, normalizing common acronyms.</summary>
     public static string PascalCase(string name)
     {
         if (string.IsNullOrEmpty(name)) return name;
-        return char.ToUpperInvariant(name[0]) + name[1..];
+        var result = char.ToUpperInvariant(name[0]) + name[1..];
+        return NormalizeAcronyms(result);
+    }
+
+    /// <summary>
+    /// Normalizes common multi-letter acronyms to title case.
+    /// e.g., "OpenURL" → "OpenUrl", "ExecutePDFAction" → "ExecutePdfAction"
+    /// </summary>
+    private static string NormalizeAcronyms(string name)
+    {
+        // Common acronyms that should be normalized in method names
+        // Only normalize when they appear as part of a larger word, not standalone
+        (string acronym, string normalized)[] acronyms = [
+            ("URL", "Url"),
+            ("PDF", "Pdf"),
+            ("HUD", "Hud"),
+            ("HTML", "Html"),
+            ("JSON", "Json"),
+        ];
+
+        foreach (var (acronym, normalized) in acronyms)
+        {
+            int idx = 0;
+            while ((idx = name.IndexOf(acronym, idx, StringComparison.Ordinal)) >= 0)
+            {
+                // Don't normalize if the acronym is at the very start of the name
+                // and is followed by nothing or a lowercase letter (standalone usage)
+                int afterIdx = idx + acronym.Length;
+
+                // Replace the acronym with its normalized form
+                name = name[..idx] + normalized + name[afterIdx..];
+                idx += normalized.Length;
+            }
+        }
+
+        return name;
+    }
+
+    /// <summary>Checks if a selector part looks like a sender/source parameter name.</summary>
+    private static bool IsSenderParameterName(string part)
+    {
+        // Common suffixes for sender parameters in delegate methods
+        string[] suffixes = SenderSuffixes;
+        foreach (var suffix in suffixes)
+        {
+            if (part.EndsWith(suffix, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    private static readonly string[] SenderSuffixes = [
+        "Controller", "View", "Manager", "Delegate", "Bar", "Cell",
+        "Picker", "Inspector", "Toolbar", "Button", "Item", "Store",
+        "Search", "HUD", "Scrubber", "Presenter", "Container",
+        "Coordinator",
+    ];
+
+    /// <summary>
+    /// Strips an embedded sender prefix from a single-part protocol selector.
+    /// e.g., "annotationGridViewControllerDidCancel" → "didCancel"
+    /// Looks for a sender suffix (Controller, View, etc.) followed by a verb.
+    /// </summary>
+    internal static string? StripEmbeddedSenderPrefix(string part)
+    {
+        foreach (var suffix in SenderSuffixes)
+        {
+            int idx = part.IndexOf(suffix, StringComparison.Ordinal);
+            if (idx <= 0) continue;
+
+            int afterSuffix = idx + suffix.Length;
+            if (afterSuffix >= part.Length) continue;
+
+            // Must be followed by an uppercase letter (start of a verb like Did, Will, Should)
+            if (!char.IsUpper(part[afterSuffix])) continue;
+
+            string remainder = part[afterSuffix..];
+
+            // Verify the remainder starts with a common verb/lifecycle word
+            string[] verbs = [
+                "Did", "Will", "Should", "Can", "Get", "Set",
+            ];
+            foreach (var verb in verbs)
+            {
+                if (remainder.StartsWith(verb, StringComparison.Ordinal))
+                    return char.ToLowerInvariant(remainder[0]) + remainder[1..];
+            }
+        }
+        return null;
     }
 }

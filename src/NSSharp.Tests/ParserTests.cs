@@ -180,4 +180,43 @@ public class ParserTests
         Assert.Contains("NSArray", prop.Type);
         Assert.Contains("NSString", prop.Type);
     }
+
+    [Fact]
+    public void Parses_Block_Type_Property()
+    {
+        var header = Parse("@interface Foo : NSObject @property (nonatomic, copy, nullable) void (^completionBlock)(BOOL success); @end");
+        var prop = header.Interfaces[0].Properties[0];
+        Assert.Equal("completionBlock", prop.Name);
+        Assert.Contains("(^)", prop.Type);
+        Assert.Contains("BOOL", prop.Type);
+        Assert.True(prop.IsNullable);
+    }
+
+    [Fact]
+    public void Parses_Block_Property_With_Object_Return_Type()
+    {
+        var header = Parse("@interface Foo : NSObject @property (nonatomic, copy) NSArray * (^choices)(NSString *arg); @end");
+        var prop = header.Interfaces[0].Properties[0];
+        Assert.Equal("choices", prop.Name);
+        Assert.Contains("NSArray", prop.Type);
+        Assert.Contains("(^)", prop.Type);
+    }
+
+    [Fact]
+    public void Parses_NS_DESIGNATED_INITIALIZER()
+    {
+        var header = Parse("@interface Foo : NSObject - (instancetype)initWithTitle:(NSString *)title NS_DESIGNATED_INITIALIZER; @end");
+        var method = header.Interfaces[0].InstanceMethods[0];
+        Assert.Equal("initWithTitle:", method.Selector);
+        Assert.True(method.IsDesignatedInitializer);
+    }
+
+    [Fact]
+    public void NS_REQUIRES_SUPER_Does_Not_Appear_In_Selector()
+    {
+        var header = Parse("@interface Foo : NSObject - (void)viewDidLoad NS_REQUIRES_SUPER; @end");
+        var method = header.Interfaces[0].InstanceMethods[0];
+        Assert.Equal("viewDidLoad", method.Selector);
+        Assert.DoesNotContain("NS_REQUIRES_SUPER", method.Selector);
+    }
 }

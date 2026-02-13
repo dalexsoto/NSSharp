@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-NSSharp is a .NET 10 CLI tool (packaged as a `dotnet tool`) that parses Objective-C header files and produces C# binding definitions (Xamarin.iOS / .NET for iOS style) or structured JSON output. It uses a custom C# lexer and recursive-descent parser — no libclang or native dependencies.
+NSSharp is a .NET 10 CLI tool (packaged as a `dotnet tool`) that parses Objective-C header files and produces C# binding definitions (Xamarin.iOS / .NET for iOS style) or structured JSON output. It uses a custom C# lexer and recursive-descent parser — no libclang or native dependencies. The lexer auto-detects vendor macros via an UPPER_SNAKE_CASE heuristic and tracks `NS_ASSUME_NONNULL` scopes for accurate nullability inference.
 
 ## Build, Test & Pack
 
@@ -10,7 +10,7 @@ NSSharp is a .NET 10 CLI tool (packaged as a `dotnet tool`) that parses Objectiv
 # Build everything
 dotnet build NSSharp.slnx
 
-# Run all tests (82 tests)
+# Run all tests (168 tests)
 dotnet test NSSharp.slnx
 
 # Run the tool during development
@@ -44,7 +44,8 @@ src/
     Program.cs                         # Entry point (System.CommandLine)
     Ast/ObjCNodes.cs                   # AST model types
     Lexer/Token.cs                     # TokenKind enum
-    Lexer/ObjCLexer.cs                 # Tokenizer
+    Lexer/ObjCLexer.cs                 # Tokenizer (UPPER_SNAKE_CASE macro heuristic)
+    Lexer/ObjCLexerOptions.cs          # Lexer config (heuristic, extern macros)
     Parser/ObjCParser.cs               # Recursive-descent parser
     Json/ObjCJsonSerializer.cs         # JSON serializer
     Binding/ObjCTypeMapper.cs          # ObjC→C# type mapping (70+ types)
@@ -56,16 +57,17 @@ src/
     JsonSerializerTests.cs             # JSON output tests
     SharpieScenarioTests.cs            # Tests from dotnet/macios sharpie PR #24622
     BindingGeneratorTests.cs           # C# binding generation tests
+    VendorMacroScenarioTests.cs        # Macro heuristic & real-world scenario tests
 ```
 
 ## Architecture
 
 The pipeline is: **Source → Lexer → Tokens → Parser → AST → Serializer/Generator → Output**
 
-- **Lexer** (`ObjCLexer`): Tokenizes ObjC source, skips 30+ Apple/NS macros, handles comments and preprocessor directives.
-- **Parser** (`ObjCParser`): Recursive-descent parser producing `ObjCHeader` AST nodes. Handles interfaces, protocols, properties, methods, enums (NS_ENUM/NS_OPTIONS/C-style), structs, typedefs, functions, blocks, generics, nullability.
+- **Lexer** (`ObjCLexer`): Tokenizes ObjC source, auto-detects vendor macros via UPPER_SNAKE_CASE heuristic (configurable via `ObjCLexerOptions`), tracks `NS_ASSUME_NONNULL_BEGIN/END` scopes, handles comments and preprocessor directives.
+- **Parser** (`ObjCParser`): Recursive-descent parser producing `ObjCHeader` AST nodes. Handles interfaces, protocols, properties (including block-type properties `void (^name)(params)`), methods, enums (NS_ENUM/NS_OPTIONS/NS_CLOSED_ENUM/NS_ERROR_ENUM/C-style), structs, typedefs, functions, blocks, categories, lightweight generics (including generic superclasses), nullability, extern constants ([Field]). Recognizes `NS_DESIGNATED_INITIALIZER` and `NS_REQUIRES_SUPER` trailing macros. Skips preprocessor directives inside protocol/identifier lists. Handles `SWIFT_EXTENSION(Module)` category names.
 - **JSON serializer**: Uses `System.Text.Json` with camelCase naming.
-- **Binding generator**: Produces Xamarin-style `[BaseType]`, `[Export]`, `[Protocol]` attributed C# interfaces. Maps ObjC types to C# via `ObjCTypeMapper`.
+- **Binding generator**: Produces Xamarin-style `[BaseType]`, `[Export]`, `[Protocol]`, `[DesignatedInitializer]`, `[Notification]`, `[Async]`, `[Abstract]` attributed C# interfaces. Emits `I`-prefixed protocol stub interfaces. Applies `[Protocol, Model]` to delegate/datasource protocols. `@required` protocol properties get `[Abstract]` and stay as C# properties (with `[Bind]` for custom getters). `@optional` protocol properties are decomposed into getter/setter method pairs. Smart method naming: uses first selector part only, strips trailing prepositions (With/At/For etc.), strips sender prefix for delegate methods, adds `Get` prefix for getter-style parameterized methods (86% name match vs sharpie). Merges ObjC categories into parent classes. Handles `NS_ASSUME_NONNULL` scope-aware nullability, weak→NullAllowed inference, `ArgumentSemantic.Strong` for object pointer properties, `[Field]` for extern constants. Detects completion handler patterns for `[Async]` and `NSNotificationName` for `[Notification]`. Maps ObjC types to C# via `ObjCTypeMapper`.
 
 ## Namespaces
 
@@ -73,7 +75,7 @@ All code is under the `NSSharp` root namespace:
 
 - `NSSharp` — XCFrameworkResolver
 - `NSSharp.Ast` — AST model types
-- `NSSharp.Lexer` — Tokenizer and token types
+- `NSSharp.Lexer` — Tokenizer, token types, and `ObjCLexerOptions`
 - `NSSharp.Parser` — Recursive-descent parser
 - `NSSharp.Json` — JSON serialization
 - `NSSharp.Binding` — C# binding generator and type mapper
@@ -139,11 +141,22 @@ Additional csproj CI features:
 ## Key Design Decisions
 
 - **No libclang dependency**: The parser is pure C# for portability and simplicity.
+- **UPPER_SNAKE_CASE macro heuristic**: Unknown vendor macros (e.g. `PSPDF_CLASS_SWIFT`, `FB_EXTERN`) are auto-detected and skipped using an UPPER_SNAKE_CASE pattern. Structural macros (`NS_ENUM`, `NS_ASSUME_NONNULL_BEGIN`, etc.) and known types (`BOOL`, `SEL`, etc.) are allowlisted and never skipped. The heuristic is configurable via `ObjCLexerOptions` and `--extern-macros`/`--no-macro-heuristic` CLI flags.
+- **NS_ASSUME_NONNULL scope tracking**: The lexer emits `NonnullBegin`/`NonnullEnd` tokens; the parser tracks a `_inNonnullScope` flag and stamps each property/method. Inside the scope, only explicitly nullable types get `[NullAllowed]`; outside, all object pointer types do.
+- **Category merging**: ObjC categories (`@interface Foo (Bar)`) are merged into the parent class interface rather than emitting separate `[Category]` interfaces, matching the modern binding convention. `SWIFT_EXTENSION(Module)` categories are recognized and merged.
+- **Protocol stub interfaces**: Each `@protocol Foo` emits `interface IFoo {}` before the protocol definition, enabling typed protocol references in bindings.
+- **[Protocol, Model] for delegates**: Protocols ending in `Delegate` or `DataSource` automatically get `[Protocol, Model]` + `[BaseType(typeof(NSObject))]`, enabling the event pattern.
 - **Default output is C#**: The `--format` option defaults to `csharp`, use `-f json` for JSON.
 - **XCFramework slice selection**: `--slice` picks a specific platform slice, `--list-slices` enumerates them.
 - **Binding output is a starting point**: Generated C# bindings may need manual adjustment (like Objective Sharpie).
 - **Enum prefix stripping**: e.g., `MyStatusOK` → `OK` when the enum is named `MyStatus`.
 - **Constructor detection**: Methods starting with `init` become `NativeHandle Constructor(...)`.
+- **[DesignatedInitializer]**: `NS_DESIGNATED_INITIALIZER` trailing macros on init methods emit `[DesignatedInitializer]` in the binding.
+- **Block-type properties**: Properties like `void (^name)(params)` are correctly parsed with the block name extracted from the caret syntax.
+- **NS_REQUIRES_SUPER**: Consumed without corrupting selectors (not currently emitted as an attribute).
+- **[Field] for extern constants**: Extern constants (no parameters) always emit `[Field]` attributes in a Constants interface. Functions with parameters emit `[DllImport]` in a CFunctions static class only when `--emit-c-bindings` is passed.
+- **Weak → NullAllowed**: Properties declared `weak` are implicitly nullable and always get `[NullAllowed]`.
+- **Default ArgumentSemantic.Retain**: Object pointer properties without explicit copy/assign/weak semantics get `ArgumentSemantic.Retain`.
 
 ## Adding New ObjC Constructs
 

@@ -35,12 +35,14 @@ public class LexerTests
     }
 
     [Fact]
-    public void Skips_NS_ASSUME_NONNULL()
+    public void Emits_NS_ASSUME_NONNULL_Tokens()
     {
         var lexer = new ObjCLexer("NS_ASSUME_NONNULL_BEGIN @interface Foo NS_ASSUME_NONNULL_END");
         var tokens = lexer.Tokenize();
-        Assert.Equal(TokenKind.AtInterface, tokens[0].Kind);
-        Assert.Equal("Foo", tokens[1].Value);
+        Assert.Equal(TokenKind.NonnullBegin, tokens[0].Kind);
+        Assert.Equal(TokenKind.AtInterface, tokens[1].Kind);
+        Assert.Equal("Foo", tokens[2].Value);
+        Assert.Equal(TokenKind.NonnullEnd, tokens[3].Kind);
     }
 
     [Fact]

@@ -58,6 +58,10 @@ public enum TokenKind
     // Preprocessor (kept as single token for skipping)
     PreprocessorDirective,
 
+    // Nullability scope
+    NonnullBegin,
+    NonnullEnd,
+
     // Special
     Eof,
     Unknown,

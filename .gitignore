@@ -470,3 +470,5 @@ mono_crash.*.json
 # Xcode
 xcuserdata/
 .build/
+DemoFramework/*
+

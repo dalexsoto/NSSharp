@@ -5,7 +5,7 @@ description: Parse Objective-C header files into structured AST using the NSShar
 
 # NSSharp ObjC Parser
 
-Parse Objective-C headers into structured JSON or AST using the NSSharp .NET 10 CLI tool. No libclang or native dependencies required.
+Parse Objective-C headers into structured JSON or AST using the NSSharp .NET 10 CLI tool. No libclang or native dependencies required. Auto-detects vendor macros via UPPER_SNAKE_CASE heuristic and tracks `NS_ASSUME_NONNULL` scopes.
 
 ## Quick Start
 
@@ -35,6 +35,12 @@ nssharp --xcframework MyLib.xcframework --list-slices
 
 # Parse specific slice
 nssharp --xcframework MyLib.xcframework --slice ios-arm64 -f json
+
+# Specify vendor export macros (treated as extern instead of skipped)
+nssharp MyHeader.h --extern-macros PSPDF_EXPORT,FB_EXTERN
+
+# Disable macro heuristic (all UPPER_SNAKE_CASE identifiers kept as-is)
+nssharp MyHeader.h --no-macro-heuristic
 ```
 
 ## CLI Options
@@ -48,19 +54,23 @@ nssharp --xcframework MyLib.xcframework --slice ios-arm64 -f json
 | `-f, --format` | `csharp` (default) or `json` |
 | `-o, --output` | Write to file |
 | `--compact` | Compact JSON |
+| `--extern-macros` | Comma-separated macros to treat as extern |
+| `--emit-c-bindings` | Include C function DllImport declarations in C# output |
+| `--no-macro-heuristic` | Disable UPPER_SNAKE_CASE auto-detection |
 
 ## Supported ObjC Constructs
 
-- `@interface` (classes, categories, extensions, generics)
-- `@protocol` (`@required` / `@optional`)
-- `@property` (attributes, nullability, custom getter/setter)
+- `@interface` (classes, categories, extensions, generics, generic superclasses, SWIFT_EXTENSION)
+- `@protocol` (`@required` / `@optional`, I-prefixed stubs, `[Model]` for delegates)
+- `@property` (attributes, nullability, custom getter/setter, weak)
 - Instance (`-`) and class (`+`) methods
-- `NS_ENUM` / `NS_OPTIONS` / C enums with backing types
+- `NS_ENUM` / `NS_OPTIONS` / `NS_CLOSED_ENUM` / `NS_ERROR_ENUM` / C enums with backing types
 - Structs, typedefs, block types
-- C function declarations (extern, static, bare)
+- C function declarations (extern, static, bare) and extern constants
 - Forward declarations (`@class`, `@protocol`)
 - Nullability annotations (`nullable`, `_Nullable`, `__nullable`, etc.)
-- 30+ Apple/NS macros are auto-skipped
+- `NS_ASSUME_NONNULL_BEGIN/END` scope tracking
+- Vendor macros auto-detected via UPPER_SNAKE_CASE heuristic
 
 ## JSON Schema
 
@@ -75,7 +85,12 @@ using NSSharp.Ast;
 using NSSharp.Json;
 
 var source = File.ReadAllText("MyHeader.h");
-var lexer = new ObjCLexer(source);
+var options = new ObjCLexerOptions
+{
+    MacroHeuristic = true,
+    ExternMacros = ["PSPDF_EXPORT"],
+};
+var lexer = new ObjCLexer(source, options);
 var tokens = lexer.Tokenize();
 var parser = new ObjCParser(tokens);
 ObjCHeader header = parser.Parse("MyHeader.h");
@@ -94,7 +109,8 @@ string json = ObjCJsonSerializer.Serialize(header, pretty: true);
 src/NSSharp/
 ├── Ast/ObjCNodes.cs              # AST model types
 ├── Lexer/Token.cs                # TokenKind enum
-├── Lexer/ObjCLexer.cs            # Tokenizer
+├── Lexer/ObjCLexer.cs            # Tokenizer (UPPER_SNAKE_CASE macro heuristic)
+├── Lexer/ObjCLexerOptions.cs     # Lexer config (heuristic, extern macros)
 ├── Parser/ObjCParser.cs          # Recursive-descent parser
 ├── Json/ObjCJsonSerializer.cs    # JSON serializer
 ├── Binding/                      # C# binding generator (see nssharp-binding-generator skill)
@@ -108,11 +124,11 @@ src/NSSharp/
 dotnet test NSSharp.slnx
 ```
 
-82 tests covering lexer, parser, JSON serializer, binding generator, and scenarios from dotnet/macios sharpie PR #24622.
+168 tests covering lexer, parser, JSON serializer, binding generator, macro heuristic scenarios, and tests from dotnet/macios sharpie PR #24622.
 
 ## Known Limitations
 
-- No full C preprocessor — common Apple macros recognized by name and skipped
+- No full C preprocessor — vendor macros auto-detected via UPPER_SNAKE_CASE heuristic; use `--extern-macros` for export macros
 - Enum values with complex expressions preserved as strings, not evaluated
 - No C++ support (classes, templates, namespaces)
 - No semantic analysis or cross-header type resolution

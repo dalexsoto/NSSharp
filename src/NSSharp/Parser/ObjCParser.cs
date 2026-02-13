@@ -8,6 +8,7 @@ public sealed class ObjCParser
 {
     private readonly List<Token> _tokens;
     private int _pos;
+    private bool _inNonnullScope;
 
     public ObjCParser(List<Token> tokens)
     {
@@ -22,7 +23,11 @@ public sealed class ObjCParser
         {
             try
             {
-                if (Match(TokenKind.AtInterface))
+                if (Match(TokenKind.NonnullBegin))
+                    _inNonnullScope = true;
+                else if (Match(TokenKind.NonnullEnd))
+                    _inNonnullScope = false;
+                else if (Match(TokenKind.AtInterface))
                     header.Interfaces.Add(ParseInterface());
                 else if (Match(TokenKind.AtProtocol))
                     ParseProtocolOrForward(header);
@@ -63,6 +68,8 @@ public sealed class ObjCParser
         {
             if (Check(TokenKind.Identifier))
                 iface.Category = Advance().Value;
+            else
+                iface.Category = ""; // Extension or macro-swallowed category name
             Expect(TokenKind.CloseParen, "Expected ')' after category name");
         }
 
@@ -70,6 +77,10 @@ public sealed class ObjCParser
         if (Match(TokenKind.Colon))
         {
             iface.Superclass = Expect(TokenKind.Identifier, "Expected superclass name").Value;
+
+            // Skip generic type parameters on superclass (e.g. NSObject<GenericType *>)
+            if (Check(TokenKind.OpenAngle) && LooksLikeGenericParams())
+                SkipBalancedAngles();
         }
 
         // Adopted protocols
@@ -169,7 +180,9 @@ public sealed class ObjCParser
 
             if (Match(TokenKind.AtProperty))
             {
-                proto.Properties.Add(ParseProperty());
+                var prop = ParseProperty();
+                prop.IsOptional = isOptional;
+                proto.Properties.Add(prop);
             }
             else if (Check(TokenKind.Minus))
             {
@@ -204,7 +217,7 @@ public sealed class ObjCParser
 
     private ObjCProperty ParseProperty()
     {
-        var prop = new ObjCProperty();
+        var prop = new ObjCProperty { InNonnullScope = _inNonnullScope };
 
         // Parse attributes: (nonatomic, copy, nullable, ...)
         if (Match(TokenKind.OpenParen))
@@ -233,8 +246,49 @@ public sealed class ObjCParser
         }
 
         // Parse type and name - type goes until last identifier before semicolon
-        prop.Type = ParseType();
-        prop.Name = Expect(TokenKind.Identifier, "Expected property name").Value;
+        // Block type property: void (^blockName)(params);
+        var baseType = ParseType();
+        if (Check(TokenKind.OpenParen) && PeekNext().Kind == TokenKind.Caret)
+        {
+            Advance(); // consume '('
+            Advance(); // consume '^'
+
+            // Optional nullability before block name
+            if (Check(TokenKind.Identifier) && IsNullabilityAnnotation(Peek().Value))
+            {
+                var nullAnnot = Advance().Value;
+                if (nullAnnot is "nullable" or "_Nullable" or "__nullable")
+                    prop.IsNullable = true;
+            }
+
+            prop.Name = Expect(TokenKind.Identifier, "Expected block property name").Value;
+            Expect(TokenKind.CloseParen, "Expected ')' after block name");
+
+            // Parse block parameter list
+            var paramStr = new StringBuilder();
+            if (Match(TokenKind.OpenParen))
+            {
+                int depth = 1;
+                while (!IsAtEnd() && depth > 0)
+                {
+                    if (Check(TokenKind.OpenParen)) depth++;
+                    if (Check(TokenKind.CloseParen)) { depth--; if (depth == 0) { Advance(); break; } }
+                    if (paramStr.Length > 0) paramStr.Append(' ');
+                    paramStr.Append(Advance().Value);
+                }
+            }
+            prop.Type = $"{baseType} (^)({paramStr})";
+        }
+        else
+        {
+            prop.Type = baseType;
+            prop.Name = Expect(TokenKind.Identifier, "Expected property name").Value;
+        }
+
+        // Detect nullable from type string too (e.g. "nullable NSString *")
+        if (!prop.IsNullable && (prop.Type.Contains("nullable") || prop.Type.Contains("_Nullable")))
+            prop.IsNullable = true;
+
         Match(TokenKind.Semicolon);
         return prop;
     }
@@ -245,18 +299,22 @@ public sealed class ObjCParser
 
     private ObjCMethod ParseMethod()
     {
-        var method = new ObjCMethod();
+        var method = new ObjCMethod { InNonnullScope = _inNonnullScope };
 
         // Return type
         Expect(TokenKind.OpenParen, "Expected '(' before return type");
         method.ReturnType = ParseTypeInsideParens();
         Expect(TokenKind.CloseParen, "Expected ')' after return type");
 
+        // Detect nullable return type
+        if (method.ReturnType.Contains("nullable") || method.ReturnType.Contains("_Nullable"))
+            method.IsReturnNullable = true;
+
         // Selector parts and parameters
         var selectorParts = new StringBuilder();
 
         // First selector part
-        if (Check(TokenKind.Identifier) || CheckKeywordAsIdentifier())
+        if ((Check(TokenKind.Identifier) && !IsTrailingMethodMacro(Peek().Value)) || CheckKeywordAsIdentifier())
         {
             selectorParts.Append(Advance().Value);
         }
@@ -267,7 +325,7 @@ public sealed class ObjCParser
             method.Parameters.Add(ParseMethodParameter());
 
             // Subsequent selector:param pairs
-            while (Check(TokenKind.Identifier) || CheckKeywordAsIdentifier())
+            while ((Check(TokenKind.Identifier) && !IsTrailingMethodMacro(Peek().Value)) || CheckKeywordAsIdentifier())
             {
                 selectorParts.Append(Advance().Value);
                 if (Match(TokenKind.Colon))
@@ -279,6 +337,15 @@ public sealed class ObjCParser
         }
 
         method.Selector = selectorParts.ToString();
+
+        // Detect trailing macros before semicolon
+        while (Check(TokenKind.Identifier) && Peek().Value is "NS_DESIGNATED_INITIALIZER" or "NS_REQUIRES_SUPER")
+        {
+            var macro = Advance().Value;
+            if (macro == "NS_DESIGNATED_INITIALIZER")
+                method.IsDesignatedInitializer = true;
+        }
+
         Match(TokenKind.Semicolon);
         return method;
     }
@@ -313,7 +380,7 @@ public sealed class ObjCParser
             Advance(); // skip class/struct keyword
 
         // Named enum
-        if (Check(TokenKind.Identifier) && Peek().Value != "NS_ENUM" && Peek().Value != "NS_OPTIONS")
+        if (Check(TokenKind.Identifier) && Peek().Value is not ("NS_ENUM" or "NS_OPTIONS" or "NS_CLOSED_ENUM" or "NS_ERROR_ENUM"))
         {
             enumNode.Name = Advance().Value;
         }
@@ -429,10 +496,10 @@ public sealed class ObjCParser
         Advance(); // consume 'typedef'
 
         // typedef NS_ENUM(...) { ... };
-        if (Check(TokenKind.Identifier) && Peek().Value is "NS_ENUM" or "NS_OPTIONS")
+        if (Check(TokenKind.Identifier) && Peek().Value is "NS_ENUM" or "NS_OPTIONS" or "NS_CLOSED_ENUM" or "NS_ERROR_ENUM")
         {
             bool isOptions = Peek().Value == "NS_OPTIONS";
-            Advance(); // consume NS_ENUM/NS_OPTIONS
+            Advance(); // consume NS_ENUM/NS_OPTIONS/NS_CLOSED_ENUM/NS_ERROR_ENUM
             var enumNode = ParseNSEnum(isOptions);
             header.Enums.Add(enumNode);
             Match(TokenKind.Semicolon);
@@ -604,6 +671,11 @@ public sealed class ObjCParser
 
         if (!Match(TokenKind.OpenParen))
         {
+            // Not a function — likely an extern constant (e.g. extern NSString * const Key;)
+            if (!string.IsNullOrEmpty(funcName))
+            {
+                header.Functions.Add(new ObjCFunction { Name = funcName, ReturnType = retType });
+            }
             SkipToSemicolon();
             return;
         }
@@ -827,6 +899,9 @@ public sealed class ObjCParser
             or "_Null_unspecified" or "null_unspecified"
             or "__nullable" or "__nonnull";
 
+    private static bool IsTrailingMethodMacro(string value) =>
+        value is "NS_DESIGNATED_INITIALIZER" or "NS_REQUIRES_SUPER";
+
     #endregion
 
     #region Expression parsing (for enum values)
@@ -858,6 +933,9 @@ public sealed class ObjCParser
         var list = new List<string>();
         while (!Check(terminator) && !IsAtEnd())
         {
+            // Skip preprocessor directives inside lists (e.g. #if TARGET_OS_...)
+            if (Match(TokenKind.PreprocessorDirective))
+                continue;
             if (Check(TokenKind.Identifier))
                 list.Add(Advance().Value);
             else if (!Match(TokenKind.Comma))
@@ -908,6 +986,43 @@ public sealed class ObjCParser
             if (depth > 0) Advance();
             else Advance(); // consume final '}'
         }
+    }
+
+    /// <summary>
+    /// Consumes balanced angle brackets including the opening &lt;.
+    /// Used to skip generic type parameters like &lt;NSString *&gt;.
+    /// </summary>
+    private void SkipBalancedAngles()
+    {
+        if (!Match(TokenKind.OpenAngle)) return;
+        int depth = 1;
+        while (depth > 0 && !IsAtEnd())
+        {
+            if (Check(TokenKind.OpenAngle)) depth++;
+            else if (Check(TokenKind.CloseAngle)) depth--;
+            if (depth > 0) Advance();
+            else Advance(); // consume final '>'
+        }
+    }
+
+    /// <summary>
+    /// Looks ahead to determine if the next &lt;...&gt; is a generic type parameter
+    /// (contains *, commas with types) rather than a protocol adoption list.
+    /// </summary>
+    private bool LooksLikeGenericParams()
+    {
+        int lookahead = _pos + 1; // skip the '<'
+        int depth = 1;
+        while (lookahead < _tokens.Count && depth > 0)
+        {
+            var t = _tokens[lookahead];
+            if (t.Kind == TokenKind.OpenAngle) depth++;
+            else if (t.Kind == TokenKind.CloseAngle) depth--;
+            // Asterisk inside angle brackets → generic type param (e.g. NSString *)
+            if (t.Kind == TokenKind.Asterisk && depth > 0) return true;
+            lookahead++;
+        }
+        return false;
     }
 
     private void SkipToSemicolon()

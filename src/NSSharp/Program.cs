@@ -43,6 +43,22 @@ var formatOpt = new Option<string>("--format", "-f")
 };
 formatOpt.DefaultValueFactory = _ => "csharp";
 
+var externMacrosOpt = new Option<string[]>("--extern-macros")
+{
+    Description = "Macro names to treat as extern (e.g. --extern-macros PSPDF_EXPORT MY_EXPORT).",
+};
+externMacrosOpt.DefaultValueFactory = _ => Array.Empty<string>();
+
+var noMacroHeuristicOpt = new Option<bool>("--no-macro-heuristic")
+{
+    Description = "Disable automatic UPPER_SNAKE_CASE macro detection. By default, identifiers like NS_SWIFT_NAME or VENDOR_DEPRECATED are auto-skipped.",
+};
+
+var emitCBindingsOpt = new Option<bool>("--emit-c-bindings")
+{
+    Description = "Include C function declarations ([DllImport]) in C# binding output. Extern constants ([Field]) are always included.",
+};
+
 var rootCommand = new RootCommand("NSSharp — Objective-C header parser and C# binding generator");
 rootCommand.Arguments.Add(filesArg);
 rootCommand.Options.Add(xcframeworkOpt);
@@ -51,6 +67,9 @@ rootCommand.Options.Add(listSlicesOpt);
 rootCommand.Options.Add(outputOpt);
 rootCommand.Options.Add(compactOpt);
 rootCommand.Options.Add(formatOpt);
+rootCommand.Options.Add(externMacrosOpt);
+rootCommand.Options.Add(noMacroHeuristicOpt);
+rootCommand.Options.Add(emitCBindingsOpt);
 
 rootCommand.SetAction(async (parseResult, cancellationToken) =>
 {
@@ -61,6 +80,15 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
     var output = parseResult.GetValue(outputOpt);
     var compact = parseResult.GetValue(compactOpt);
     var format = parseResult.GetValue(formatOpt) ?? "json";
+    var externMacros = parseResult.GetValue(externMacrosOpt) ?? [];
+    var noMacroHeuristic = parseResult.GetValue(noMacroHeuristicOpt);
+    var emitCBindings = parseResult.GetValue(emitCBindingsOpt);
+
+    var lexerOptions = new ObjCLexerOptions
+    {
+        MacroHeuristic = !noMacroHeuristic,
+        ExternMacros = externMacros,
+    };
 
     // Handle --list-slices
     if (listSlices)
@@ -135,7 +163,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         try
         {
             var source = await File.ReadAllTextAsync(path, cancellationToken);
-            var lexer = new ObjCLexer(source);
+            var lexer = new ObjCLexer(source, lexerOptions);
             var tokens = lexer.Tokenize();
             var parser = new ObjCParser(tokens);
             var header = parser.Parse(Path.GetFileName(path));
@@ -151,13 +179,19 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
     if (format.Equals("csharp", StringComparison.OrdinalIgnoreCase) ||
         format.Equals("cs", StringComparison.OrdinalIgnoreCase))
     {
+        // Merge ObjC categories into parent classes across all headers
+        CSharpBindingGenerator.MergeCategories(headers);
+
+        // Build typedef resolution map from all headers
+        CSharpBindingGenerator.BuildTypedefMap(headers);
+
         var generator = new CSharpBindingGenerator();
         var sb = new System.Text.StringBuilder();
         foreach (var header in headers)
         {
             if (sb.Length > 0) sb.AppendLine();
             sb.AppendLine($"// ========== {header.File} ==========");
-            sb.AppendLine(generator.Generate(header));
+            sb.AppendLine(generator.Generate(header, emitCBindings));
         }
         result = sb.ToString().TrimEnd();
     }

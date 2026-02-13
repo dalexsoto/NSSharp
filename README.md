@@ -7,22 +7,25 @@ Built as a self-contained C# parser — no libclang or native dependencies requi
 ## Features
 
 - **Custom ObjC lexer & parser** — tokenizes and parses Objective-C headers directly in C#
+- **UPPER_SNAKE_CASE macro heuristic** — auto-detects and skips vendor macros (e.g. `PSPDF_EXPORT`, `FB_INIT`) without hardcoded lists
+- **NS_ASSUME_NONNULL scope tracking** — accurately infers `[NullAllowed]` based on nonnull scope
 - **JSON output** — structured JSON representation of all API constructs
 - **C# binding generation** — produces Xamarin/MAUI-style `[Export]`/`[BaseType]` binding definitions
+- **Category merging** — ObjC categories are merged into parent class interfaces (including `SWIFT_EXTENSION` categories)
 - **XCFramework support** — discovers and parses all headers inside `.xcframework` bundles
 - **Comprehensive construct support**:
   - `@interface` (classes, categories, extensions)
   - `@protocol` (with `@required` / `@optional`)
-  - `@property` (attributes, nullability, custom getter/setter)
+  - `@property` (attributes, nullability, custom getter/setter, weak→NullAllowed)
   - Instance and class methods
-  - `NS_ENUM` / `NS_OPTIONS` / plain C enums (with backing types)
+  - `NS_ENUM` / `NS_OPTIONS` / `NS_CLOSED_ENUM` / `NS_ERROR_ENUM` / plain C enums (with backing types)
   - Structs and typedefs
-  - C function declarations
+  - C function declarations and extern constants (`[Field]`)
   - Block types
   - Forward declarations (`@class`, `@protocol`)
-  - Lightweight generics (`NSArray<NSString *>`)
+  - Lightweight generics (`NSArray<NSString *>`, generic superclasses)
   - Nullability annotations (`nullable`, `_Nullable`, `__nullable`, etc.)
-- **Macro handling** — recognizes and skips 30+ common Apple/NS macros (`NS_ASSUME_NONNULL_BEGIN`, `API_AVAILABLE`, `__attribute__`, etc.)
+- **Configurable macro handling** — `--extern-macros` for vendor export macros, `--no-macro-heuristic` to disable auto-detection, `--emit-c-bindings` to include C function DllImport declarations
 - **Packaged as a dotnet tool** — installable via `dotnet tool install`
 
 ## Requirements
@@ -75,14 +78,17 @@ Arguments:
   <files>          One or more Objective-C header files to parse.
 
 Options:
-  --xcframework    Path to an .xcframework bundle to discover and parse all headers.
-  --slice          Select a specific xcframework slice (e.g. ios-arm64).
-  --list-slices    List available slices in the xcframework and exit.
-  -o, --output     Write output to a file instead of stdout.
-  -f, --format     Output format: csharp (default) or json.
-  --compact        Output compact JSON (only applies to json format).
-  -h, --help       Show help and usage information.
-  --version        Show version information.
+  --xcframework       Path to an .xcframework bundle to discover and parse all headers.
+  --slice             Select a specific xcframework slice (e.g. ios-arm64).
+  --list-slices       List available slices in the xcframework and exit.
+  -o, --output        Write output to a file instead of stdout.
+  -f, --format        Output format: csharp (default) or json.
+  --compact           Output compact JSON (only applies to json format).
+  --extern-macros        Comma-separated macros to treat as extern (e.g. PSPDF_EXPORT,FB_EXTERN).
+  --emit-c-bindings      Include C function declarations ([DllImport]) in output. Extern constants ([Field]) are always included.
+  --no-macro-heuristic   Disable UPPER_SNAKE_CASE auto-detection of vendor macros.
+  -h, --help          Show help and usage information.
+  --version           Show version information.
 ```
 
 ## JSON Output Schema
@@ -217,8 +223,9 @@ interface MyClass : INSCoding
 | ObjC Construct | C# Output |
 |---|---|
 | `@interface Foo : Bar` | `[BaseType(typeof(Bar))] interface Foo` |
-| `@interface Foo (Cat)` | `[Category] [BaseType(typeof(Foo))] interface Foo_Cat` |
-| `@protocol P` | `[Protocol] interface P` |
+| `@interface Foo (Cat)` | Merged into parent `Foo` interface (or `[Category]` if parent not parsed) |
+| `@protocol P` | `interface IP {}` stub + `[Protocol] interface P` |
+| `@protocol PDelegate` | `interface IPDelegate {}` stub + `[Protocol, Model] [BaseType(typeof(NSObject))] interface PDelegate` |
 | Protocol conformance `<P>` | `: IP` interface inheritance |
 | `@required` methods | `[Abstract] [Export("sel")]` |
 | `@optional` methods | `[Export("sel")]` (no `[Abstract]`) |
@@ -226,16 +233,30 @@ interface MyClass : INSCoding
 | `@property (readonly)` | `{ get; }` only |
 | `@property (copy)` | `ArgumentSemantic.Copy` |
 | `@property (nullable)` | `[NullAllowed]` |
+| `@property (weak)` | `[NullAllowed]` (implicit) |
 | `@property (class)` | `[Static]` |
-| Instance method `-` | `[Export("selector:")]` |
+| Object pointer property | `ArgumentSemantic.Strong` (default) |
+| Instance method `-` | `[Export("selector:")]` — smart method naming (first part only, strips trailing prepositions) |
 | Class method `+` | `[Static] [Export("selector:")]` |
+| Delegate method `obj:didX:` | Strips sender prefix, uses second part (`DidX`) |
 | `-(instancetype)init*` | `NativeHandle Constructor(...)` |
+| `NS_DESIGNATED_INITIALIZER` | `[DesignatedInitializer]` on constructors |
+| Block-type property `void (^name)(...)` | Property with `Action` type |
 | `NS_ENUM(NSInteger, X)` | `[Native] enum X : long` |
 | `NS_OPTIONS(NSUInteger, X)` | `[Flags] enum X : ulong` |
+| `NS_CLOSED_ENUM` | Same as `NS_ENUM` |
+| `NS_ERROR_ENUM` | Same as `NS_ENUM` |
 | C `enum Foo : type` | `enum Foo : mappedType` |
 | `struct` | `[StructLayout(LayoutKind.Sequential)] struct` |
-| `extern` function | `[DllImport("__Internal")] static extern` |
+| `extern` function | `[DllImport("__Internal")] static extern` (requires `--emit-c-bindings`) |
+| `extern` constant | `[Field("name", "__Internal")]` in Constants interface |
+| `extern NSNotificationName` | `[Notification] [Field("name")]` |
+| Completion handler method | `[Async]` attribute (class methods only, auto-detected from `completion:` suffix) |
+| Protocol `@required @property` | `[Abstract]` + C# property (with `[Bind("isX")]` for custom getters) |
+| Protocol `@optional @property` | Decomposed into getter/setter method pairs |
+| Protocol `@optional @property (getter=isX)` | Getter uses custom selector, setter uses `setX:` |
 | Variadic `...` | `IntPtr varArgs` parameter |
+| `NS_ASSUME_NONNULL_BEGIN/END` | Scope-aware `[NullAllowed]` inference |
 
 ### Type mapping
 
@@ -261,11 +282,16 @@ interface MyClass : INSCoding
 | `id` | `NSObject` |
 | `SEL` | `Selector` |
 | `Class` | `Class` |
-| `instancetype` | `instancetype` |
+| `instancetype` | Class name (static) or `NativeHandle Constructor` (init) |
 | `NSString *` | `string` |
-| `NSArray *` | `NSObject[]` |
+| `NSArray *` | `NSObject []` |
+| `NSArray<Type *> *` | `Type []` (typed arrays) |
+| `id<Protocol>` | `IProtocol` |
+| `UIView<Protocol>` | `IProtocol` |
+| `IBAction` | `void` |
 | `CGColorRef` | `CGColor` |
 | `dispatch_queue_t` | `DispatchQueue` |
+| `*Block` typedef | `*Handler` (.NET convention) |
 
 See `Binding/ObjCTypeMapper.cs` for the full mapping table (70+ types).
 
@@ -365,7 +391,8 @@ NSSharp/
     │   │   └── ObjCNodes.cs           # AST model types
     │   ├── Lexer/
     │   │   ├── Token.cs                # Token types and TokenKind enum
-    │   │   └── ObjCLexer.cs            # Tokenizer with macro skipping
+    │   │   ├── ObjCLexer.cs            # Tokenizer (UPPER_SNAKE_CASE macro heuristic)
+    │   │   └── ObjCLexerOptions.cs     # Lexer config (heuristic, extern macros)
     │   ├── Parser/
     │   │   └── ObjCParser.cs           # Recursive-descent parser
     │   ├── Json/
@@ -382,6 +409,7 @@ NSSharp/
         ├── JsonSerializerTests.cs
         ├── SharpieScenarioTests.cs     # Tests from dotnet/macios sharpie PR
         ├── BindingGeneratorTests.cs
+        ├── VendorMacroScenarioTests.cs # Macro heuristic & real-world scenarios
         └── NSSharp.Tests.csproj
 ```
 
@@ -391,19 +419,22 @@ NSSharp/
 dotnet test
 ```
 
-82 tests covering:
-- **Lexer**: tokenization, comment skipping, macro handling, number literals
-- **Parser**: all ObjC constructs (interfaces, protocols, properties, methods, enums, structs, typedefs, functions, blocks, categories, generics, forward declarations)
+168 tests covering:
+- **Lexer**: tokenization, comment skipping, macro heuristic, UPPER_SNAKE_CASE detection, number literals
+- **Parser**: all ObjC constructs (interfaces, protocols, properties, methods, enums, structs, typedefs, functions, blocks, categories, generics, generic superclasses, forward declarations, NS_ASSUME_NONNULL scoping)
 - **JSON serializer**: schema correctness, camelCase, compact mode
-- **Binding generator**: type mapping, `[Export]`, `[BaseType]`, `[Protocol]`, `[Category]`, constructors, properties, enums, structs, P/Invoke
+- **Binding generator**: type mapping, `[Export]`, `[BaseType]`, `[Protocol]`, `[Protocol, Model]`, I-prefix stubs, `[Category]`, constructors, properties, enums, structs, P/Invoke, `[Field]`, `[Notification]`, `[Async]`, `[Bind]`, `[Abstract]`, protocol property decomposition (required vs optional), category merging, NullAllowed inference
 - **Sharpie scenarios**: 33 tests ported from [dotnet/macios PR #24622](https://github.com/dotnet/macios/pull/24622) test headers
+- **Vendor macro scenarios**: macro heuristic detection, real-world vendor macro patterns, category merging, generic superclasses, preprocessor directives in protocol lists, SWIFT_EXTENSION categories
 
 ## Limitations
 
-- **No preprocessor**: does not run a full C preprocessor. Common Apple/NS macros are recognized by name and skipped. Unknown macros may cause parse issues.
+- **No preprocessor**: does not run a full C preprocessor. Vendor macros are auto-detected via UPPER_SNAKE_CASE heuristic and skipped. Use `--extern-macros` for vendor export macros, `--no-macro-heuristic` to disable auto-detection.
 - **No expression evaluation**: enum values with complex expressions are preserved as strings, not evaluated.
 - **No C++ support**: `__cplusplus` guarded code, C++ classes, templates, and namespaces are out of scope.
 - **No semantic analysis**: the parser works syntactically. It does not resolve types across headers or validate type correctness.
+- **Not implemented**: `[Wrap]` (convenience wrappers), Keys/Options typed dictionaries, typed `[Notification(typeof(EventArgs))]` with userInfo key extraction.
+- **Protocol property decomposition**: `@required` protocol properties get `[Abstract]` and stay as C# properties (with `[Bind("isX")]` for custom getters). `@optional` protocol properties are decomposed into explicit getter/setter method pairs, with custom getter selectors used when available.
 - **Binding output is a starting point**: generated C# bindings may need manual review and adjustment (similar to Objective Sharpie's `[Verify]` hints).
 
 ## License
