@@ -809,7 +809,65 @@ Without this fix, the entire `PSPDFAnnotationStateManager` class was lost due to
 
 ## Comparison with Objective Sharpie
 
-We tested extensively against sharpie's output for PSPDFKitUI (~200 headers, ~1750 exports). Final results:
+### PSPDFKit.xcframework (current test target)
+
+Tested against sharpie's output for PSPDFKit.xcframework (214 headers, 1583 common exports across 218 common interfaces). After 5 iterations of comparison and improvement:
+
+| Metric | Count | Accuracy |
+|---|---|---|
+| Common exports | 1583 | — |
+| Exact match | 1278 | **80.7%** |
+| With diffs | 305 | 19.3% |
+
+Diff categories (remaining):
+
+| Category | Count | Notes |
+|---|---|---|
+| NAME | 120 | Method/property naming differences |
+| SEMANTIC | 94 | ArgumentSemantic inconsistencies (sharpie may be manually edited) |
+| PARAMS | 220 | Block types (Action vs typed delegates), param naming |
+| RETURN_TYPE | 41 | `new` keyword, generic collection types |
+| PROP_TYPE | 37 | Block handler types, NSString vs string |
+| MISSING_EXPORT | 30 | Configuration builder patterns, cross-framework |
+| EXTRA_EXPORT | 50 | NSSharp emits methods sharpie doesn't |
+| NULLALLOWED | 24 | Scope inconsistencies |
+| ASYNC | 17 | Detection differences |
+| ACCESSORS | 15 | Getter/setter differences |
+
+**Progress through iterations:**
+- Baseline: 76.4% (1209/1583)
+- After iteration 1 (semantic, verb prefixes, protocol naming): ~78%
+- After iteration 2 (factory From naming, bool return): 79.5%
+- After iteration 3 (verb word boundary, protocol property verb): 79.7%
+- After iteration 4 (DisableDefaultCtor, init unavailable macros): 79.7%
+- After iteration 5 (UID/XMP acronyms, Block→Action, isEqualTo, Create prefix): **80.7%**
+
+### Instant.xcframework (historical test target)
+
+Tested against sharpie's output for Instant.xcframework (9 headers, 60 exports). On the 55 common exports:
+
+| Metric | Result |
+|---|---|
+| Method naming | **100%** (55/55) |
+| Return types | **0 diffs** |
+| Parameter types | **0 diffs** |
+| Parameter names | **0 diffs** |
+
+Attribute comparison:
+
+| Metric | Sharpie | NSSharp | Accuracy |
+|---|---|---|---|
+| `[Export]` | 60 | 57 | 95% (4 missing: 2 cross-framework constructors, 2 EventArgs keys) |
+| `[Abstract]` | 32 | 32 | 100% ✓ |
+| `[BaseType]` | 5 | 5 | 100% ✓ |
+| `[Notification]` | 9 | 9 | 100% ✓ |
+| `[NullAllowed]` | 34 | 32 | 94% (2 from cross-framework constructors) |
+| enums | 4 | 4 | 100% ✓ |
+| interfaces | 13 | 13 | 100% ✓ |
+
+Remaining gaps are structural (cross-framework inheritance, Notification EventArgs).
+
+### PSPDFKitUI (historical test target, ~200 headers)
 
 | Metric | Sharpie | NSSharp | Accuracy |
 |---|---|---|---|
@@ -926,3 +984,49 @@ We tested extensively against sharpie's output for PSPDFKitUI (~200 headers, ~17
 21. **`id<Protocol>` and `Class<Protocol>` map to `IProtocol`.** Handle spaces in `id < Protocol >` (common in parsed AST). For `UIView<PSPDFAnnotationPresenting>`, map to `IPSPDFAnnotationPresenting` (the protocol interface), not `UIView`. Don't apply this to collection types (NSDictionary, NSSet).
 
 22. **Rename `*Block` typedefs to `*Handler`.** .NET convention prefers `Handler` suffix for callback types. Transform `PSPDFAnnotationGroupItemConfigurationBlock` → `PSPDFAnnotationGroupItemConfigurationHandler`.
+
+23. **`out NSError` parameters always get `[NullAllowed]`.** In Xamarin bindings, ALL `NSError **` (out) parameters should get `[NullAllowed]`, even inside `NS_ASSUME_NONNULL` scope. This applies to both regular methods AND constructors.
+
+24. **ObjC direction qualifiers must be stripped from types.** `out`, `in`, `inout`, `bycopy`, `byref`, `oneway` are ObjC parameter direction qualifiers that appear at the start of type strings. Strip them before type mapping to avoid double `out` (ObjC `out` + C# `out` for double pointers).
+
+25. **Delegate method naming: find the verb part.** For selectors like `instantClient:documentDescriptor:didFailDownloadWithError:`, after stripping the sender (`instantClient`), search ALL remaining parts for a verb prefix (`did`, `will`, `should`, `can`). Don't just use the first remaining part (`documentDescriptor`). Result: `DidFailDownload`.
+
+26. **Sender suffix list must be comprehensive.** Beyond Controller/View/Manager, include: Client, Provider, Service, Handler, Source, Session, Connection, Cache. Missing a sender suffix means the first part isn't stripped in delegate method naming.
+
+27. **Preposition stripping list must be comprehensive.** Beyond With/At/For/From/In/On/Of, include: Using, By, To. Missing `Using` causes `downloadUsingJWT` to not strip to `Download`.
+
+28. **`NS_ERROR_ENUM` has different parameter order.** `NS_ERROR_ENUM(ErrorDomain, EnumName)` — first param is the error domain, NOT the backing type. The backing type is implicitly `NSInteger`. Parse accordingly.
+
+29. **Typedef inside `@protocol` bodies.** `typedef NS_OPTIONS(...)` can be declared inline inside protocol bodies. Parse them and add to the header's enum list, not the protocol.
+
+30. **Preserve Foundation types in generic parameters.** `NSDictionary<NSString *, NSSet<id<Protocol>> *>` → `NSDictionary<NSString, NSSet<IProtocol>>`. Inside generic params, use `NSString` not `string`, because generic constraints require `NSObject` subclasses.
+
+31. **ArgumentSemantic: only emit when explicitly declared.** Don't infer `Strong` for object pointers by default. Only emit when the property has explicit `copy`/`strong`/`retain`/`weak`/`assign`. For non-primitive value types (enums), infer `Assign`.
+
+32. **Category properties should be decomposed into methods.** Unlike regular class properties, category properties should be emitted as getter/setter methods (like optional protocol properties) without `[Abstract]`. ObjC categories can't add stored properties.
+
+33. **`IBInspectable` and `IBOutlet` are type qualifiers to strip.** These Interface Builder annotations appear in type strings and should be removed before type mapping.
+
+34. **Enum prefix stripping with shortened prefixes.** When enum values don't match the full enum name as prefix, try shortened forms: strip common suffixes (Code, Type, Kind, Status, Style, Mode, State, Options, Flag) from the enum name. `PSPDFInstantErrorCode` values prefixed `PSPDFInstantError` → strip `PSPDFInstantError`.
+
+35. **Normalize acronyms in enum member names.** After prefix stripping, apply the same acronym normalization (URL→Url, etc.) to enum member names. `InvalidURL` → `InvalidUrl`.
+
+36. **`[DisableDefaultCtor]`** should only be emitted when init is EXPLICITLY marked unavailable via macros (e.g., `PSPDF_EMPTY_INIT_UNAVAILABLE`, `NS_INIT_UNAVAILABLE`). Don't infer from parameterized init presence — many classes with parameterized inits still support `init`.
+
+37. **Init unavailable macro detection requires lexer cooperation.** The lexer's UPPER_SNAKE_CASE macro heuristic skips macros like `PSPDF_EMPTY_INIT_UNAVAILABLE` before the parser sees them. Fix: whitelist macros containing `INIT_UNAVAILABLE` or `EMPTY_INIT` in the lexer, preserving them as identifiers.
+
+38. **Static factory methods get `Create` prefix, not `Get`.** Static methods returning `instancetype` that aren't covered by the `From<Param>` pattern should use `CreateXxx` naming (e.g., `encryptedLibraryWithPath:` → `CreateEncryptedLibrary`), not `GetEncryptedLibrary`.
+
+39. **`performBlock:` → `PerformAction`.** The word `Block` in method names should be renamed to `Action` at word boundaries (e.g., `performBlockForReading:` → `PerformActionForReading`). This matches .NET naming conventions.
+
+40. **`isEqualTo<ClassName>:` → `IsEqualTo`.** ObjC's `isEqualTo<Type>:` equality methods strip the class name suffix, keeping just `IsEqualTo`. This is a well-known NSObject pattern.
+
+41. **`UID` → `Uid`, `XMP` → `Xmp`.** Add to the acronym normalization table alongside URL/PDF/JSON/etc. These appear frequently in PSPDFKit APIs.
+
+42. **Preposition stripping: `To` is part of the method name.** Unlike `With`/`At`/`For` which indicate parameter context, `To` is usually semantically meaningful (e.g., `BindToObjectLifetime`, `ConvertIntentTypeTo`). Don't strip it.
+
+43. **Verb search after sender stripping must check single remaining parts.** After stripping the delegate sender, if only one part remains, it may still contain a verb prefix (e.g., `didBeginSyncForDocumentDescriptor`). Search for verb prefixes in ALL remaining parts, not just when ≥2 parts remain.
+
+44. **ArgumentSemantic for readwrite object pointers: infer `Strong`.** Readwrite properties with object pointer types but no explicit semantic should get `ArgumentSemantic.Strong` (sharpie convention for PSPDFKit). Readonly properties get no inference. Explicit `copy`/`strong`/`weak`/`assign` always emitted regardless of readonly status.
+
+45. **Sharpie's output may be manually edited.** The reference ApiDefinition.cs for PSPDFKit shows inconsistencies in ArgumentSemantic, naming, and attribute application. Some differences may not be sharpie's raw output but post-generation manual edits. Target 80%+ match, not 100%.

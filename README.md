@@ -235,13 +235,17 @@ interface MyClass : INSCoding
 | `@property (nullable)` | `[NullAllowed]` |
 | `@property (weak)` | `[NullAllowed]` (implicit) |
 | `@property (class)` | `[Static]` |
-| Object pointer property | `ArgumentSemantic.Strong` (default) |
+| Object pointer property | `ArgumentSemantic.Strong` (readwrite default) |
 | Instance method `-` | `[Export("selector:")]` — smart method naming (first part only, strips trailing prepositions) |
 | Class method `+` | `[Static] [Export("selector:")]` |
 | Delegate method `obj:didX:` | Strips sender prefix, uses second part (`DidX`) |
 | `-(instancetype)init*` | `NativeHandle Constructor(...)` |
 | `NS_DESIGNATED_INITIALIZER` | `[DesignatedInitializer]` on constructors |
+| Init unavailable macro | `[DisableDefaultCtor]` (e.g., `PSPDF_EMPTY_INIT_UNAVAILABLE`) |
+| Static factory `classWithParam:` | `From<Param>` (when class name matches) or `Create<Name>` |
 | Block-type property `void (^name)(...)` | Property with `Action` type |
+| Method name with `Block` | Renamed to `Action` (e.g., `performBlock:` → `PerformAction`) |
+| `isEqualTo<Class>:` | `IsEqualTo` (class name suffix stripped) |
 | `NS_ENUM(NSInteger, X)` | `[Native] enum X : long` |
 | `NS_OPTIONS(NSUInteger, X)` | `[Flags] enum X : ulong` |
 | `NS_CLOSED_ENUM` | Same as `NS_ENUM` |
@@ -286,12 +290,17 @@ interface MyClass : INSCoding
 | `NSString *` | `string` |
 | `NSArray *` | `NSObject []` |
 | `NSArray<Type *> *` | `Type []` (typed arrays) |
+| `NSDictionary<K, V>` | `NSDictionary<MappedK, MappedV>` (preserves Foundation types) |
+| `NSSet<T>` | `NSSet<MappedT>` (preserves Foundation types) |
 | `id<Protocol>` | `IProtocol` |
 | `UIView<Protocol>` | `IProtocol` |
 | `IBAction` | `void` |
+| `IBInspectable BOOL` | `bool` (IB annotations stripped) |
 | `CGColorRef` | `CGColor` |
 | `dispatch_queue_t` | `DispatchQueue` |
 | `*Block` typedef | `*Handler` (.NET convention) |
+| `out NSString *…*` | `out string` (ObjC `out` qualifier stripped, no double `out`) |
+| `NSError **` | `out NSError` + always `[NullAllowed]` |
 
 See `Binding/ObjCTypeMapper.cs` for the full mapping table (70+ types).
 
@@ -419,11 +428,11 @@ NSSharp/
 dotnet test
 ```
 
-168 tests covering:
+185 tests covering:
 - **Lexer**: tokenization, comment skipping, macro heuristic, UPPER_SNAKE_CASE detection, number literals
 - **Parser**: all ObjC constructs (interfaces, protocols, properties, methods, enums, structs, typedefs, functions, blocks, categories, generics, generic superclasses, forward declarations, NS_ASSUME_NONNULL scoping)
 - **JSON serializer**: schema correctness, camelCase, compact mode
-- **Binding generator**: type mapping, `[Export]`, `[BaseType]`, `[Protocol]`, `[Protocol, Model]`, I-prefix stubs, `[Category]`, constructors, properties, enums, structs, P/Invoke, `[Field]`, `[Notification]`, `[Async]`, `[Bind]`, `[Abstract]`, protocol property decomposition (required vs optional), category merging, NullAllowed inference
+- **Binding generator**: type mapping, `[Export]`, `[BaseType]`, `[Protocol]`, `[Protocol, Model]`, I-prefix stubs, `[Category]`, constructors, `[DisableDefaultCtor]`, properties, enums (including NS_ERROR_ENUM), structs, P/Invoke, `[Field]`, `[Notification]`, `[Async]`, `[Bind]`, `[Abstract]`, protocol property decomposition, category property decomposition, NullAllowed inference, out NSError NullAllowed, ArgumentSemantic (explicit only), acronym normalization, generic collection types, ObjC direction qualifier stripping, enum prefix stripping with short prefix fallback
 - **Sharpie scenarios**: 33 tests ported from [dotnet/macios PR #24622](https://github.com/dotnet/macios/pull/24622) test headers
 - **Vendor macro scenarios**: macro heuristic detection, real-world vendor macro patterns, category merging, generic superclasses, preprocessor directives in protocol lists, SWIFT_EXTENSION categories
 

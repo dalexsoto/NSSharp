@@ -22,6 +22,7 @@ public sealed class ObjCInterface
     public List<ObjCProperty> Properties { get; set; } = [];
     public List<ObjCMethod> InstanceMethods { get; set; } = [];
     public List<ObjCMethod> ClassMethods { get; set; } = [];
+    public bool IsInitUnavailable { get; set; }
 }
 
 public sealed class ObjCProtocol

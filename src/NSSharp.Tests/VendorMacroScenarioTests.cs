@@ -251,15 +251,19 @@ public class VendorMacroScenarioTests
     }
 
     [Fact]
-    public void Property_ObjectPointerWithoutExplicitSemantic_DefaultsToStrong()
+    public void Property_ObjectPointerWithoutExplicitSemantic_ReadwriteInfersStrong()
     {
         var cs = GenerateBindings(@"
             @interface Foo : NSObject
             @property (nonatomic) NSArray *items;
+            @property (nonatomic, readonly) NSArray *readonlyItems;
             @end
         ");
 
-        Assert.Contains("ArgumentSemantic.Strong", cs);
+        // Readwrite object pointer → Strong
+        Assert.Contains("items\", ArgumentSemantic.Strong", cs);
+        // Readonly object pointer → no semantic
+        Assert.DoesNotContain("readonlyItems\", ArgumentSemantic", cs);
     }
 
     #endregion

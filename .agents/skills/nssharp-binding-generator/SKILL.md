@@ -53,11 +53,15 @@ nssharp MyHeader.h --emit-c-bindings -o Bindings.cs
 | `@property (nullable)` | `[NullAllowed]` |
 | `@property (weak)` | `[NullAllowed]` (implicit) |
 | `@property (class)` | `[Static]` |
-| Object pointer property | `ArgumentSemantic.Strong` (default) |
+| Object pointer property | `ArgumentSemantic.Strong` (readwrite default), `ArgumentSemantic.Retain` for explicit retain |
 | Class method `+` | `[Static] [Export("sel")]` |
 | `-(instancetype)init*` | `NativeHandle Constructor(...)` |
 | `NS_DESIGNATED_INITIALIZER` | `[DesignatedInitializer]` on constructors |
+| Init unavailable macro | `[DisableDefaultCtor]` (e.g., `PSPDF_EMPTY_INIT_UNAVAILABLE`) |
+| Static factory `+classWithParam:` | `From<Param>` (class name match) or `Create<Name>` |
 | Block-type property `void (^name)(...)` | Property with `Action` type |
+| Method name with `Block` | Renamed to `Action` (e.g., `performBlock:` → `PerformAction`) |
+| `isEqualTo<Class>:` | `IsEqualTo` (class name suffix stripped) |
 | `NS_ENUM(NSInteger, X)` | `[Native] enum X : long` |
 | `NS_OPTIONS(NSUInteger, X)` | `[Flags] enum X : ulong` |
 | `NS_CLOSED_ENUM` / `NS_ERROR_ENUM` | Same as `NS_ENUM` |
@@ -90,10 +94,14 @@ See [references/type-mapping.md](references/type-mapping.md) for the complete Ob
 | `instancetype` | Class name (static methods) or `NativeHandle Constructor` (init) |
 | `NSArray *` | `NSObject []` |
 | `NSArray<Type *>` | `Type []` (typed arrays) |
+| `NSDictionary<K, V>` | `NSDictionary<MappedK, MappedV>` (preserves Foundation types) |
+| `NSSet<T>` | `NSSet<MappedT>` (preserves Foundation types) |
 | `id<Protocol>` | `IProtocol` |
 | `UIView<Protocol>` | `IProtocol` (protocol interface) |
 | `IBAction` | `void` |
+| `IBInspectable BOOL` | `bool` (IB annotations stripped) |
 | `Type **` | `out Type` |
+| `NSError **` | `out NSError` + always `[NullAllowed]` |
 | Block `(^)(...)` | `Action` |
 | `*Block` typedef | `*Handler` (.NET convention) |
 
@@ -127,8 +135,8 @@ CSharpBindingGenerator.MergeCategories(headers);
 
 | File | Purpose |
 |---|---|
-| `src/NSSharp/Binding/CSharpBindingGenerator.cs` | Main generator (~913 lines) |
-| `src/NSSharp/Binding/ObjCTypeMapper.cs` | Type mapping + selector→method name conversion (~466 lines) |
+| `src/NSSharp/Binding/CSharpBindingGenerator.cs` | Main generator (~1078 lines) |
+| `src/NSSharp/Binding/ObjCTypeMapper.cs` | Type mapping + selector→method name conversion (~630 lines) |
 | `src/NSSharp/Lexer/ObjCLexerOptions.cs` | Lexer config (macro heuristic, extern macros) |
 
 ## Key Methods in ObjCTypeMapper
@@ -136,7 +144,7 @@ CSharpBindingGenerator.MergeCategories(headers);
 - `MapType(string objcType)` → C# type string
 - `MapEnumBackingType(string? objcType)` → C# enum backing type
 - `IsNativeEnum(string? objcType)` → whether `[Native]` attribute is needed
-- `SelectorToMethodName(string selector, bool isProtocolMethod)` → Smart method name: first part only, strips trailing prepositions, strips sender prefix for protocols (multi-part and embedded single-part), normalizes acronyms (URL→Url, PDF→Pdf, etc.)
+- `SelectorToMethodName(string selector, bool isProtocolMethod)` → Smart method name: first part only, strips trailing prepositions, strips sender prefix for protocols (multi-part and embedded single-part), renames Block→Action, handles isEqualTo pattern, normalizes acronyms (URL→Url, PDF→Pdf, UID→Uid, XMP→Xmp, etc.)
 - `PascalCase(string name)` → PascalCase conversion with acronym normalization
 - `SetTypedefMap(Dictionary<string, string>)` → Sets typedef resolution map
 - `ResolveTypedef(string typeName)` → Resolves typedef aliases to base types
@@ -145,7 +153,7 @@ CSharpBindingGenerator.MergeCategories(headers);
 
 - `Generate(ObjCHeader header)` → full C# binding output (merges categories in-place)
 - `MergeCategories(List<ObjCHeader> headers)` → static cross-header category merging
-- `IsObjectPointerType(string type)` → checks if type needs `ArgumentSemantic.Strong`
+- `IsObjectPointerType(string type)` → checks if type is an object pointer
 - `BuildTypedefMap(List<ObjCHeader>)` → builds typedef resolution map from parsed headers
 
 ## Notes
@@ -157,7 +165,15 @@ CSharpBindingGenerator.MergeCategories(headers);
 - `NS_REQUIRES_SUPER` is consumed without corrupting selectors
 - Block-type properties (`void (^name)(params)`) are correctly parsed with the block name extracted
 - Properties with `copy`/`strong`/`retain`/`assign`/`weak` get `ArgumentSemantic` annotations
-- Object pointer properties without explicit semantic get `ArgumentSemantic.Strong`
+- Object pointer properties without explicit semantic: readwrite infer `ArgumentSemantic.Strong`; readonly get no inference
+- Non-primitive value type properties (enums) without explicit semantic: readwrite infer `ArgumentSemantic.Assign`
+- `out NSError` parameters always get `[NullAllowed]`
+- Category properties are decomposed into getter/setter methods (not C# properties)
+- `[DisableDefaultCtor]` only emitted when init is explicitly unavailable via macros (e.g., `PSPDF_EMPTY_INIT_UNAVAILABLE`), not inferred
+- The lexer whitelists macros containing `INIT_UNAVAILABLE` or `EMPTY_INIT`, preserving them for the parser
+- Static factory methods returning `instancetype` get `Create<Name>` prefix instead of `Get<Name>`
+- `Block` in method names is renamed to `Action` at word boundaries (e.g., `performBlock:` → `PerformAction`)
+- `isEqualTo<ClassName>:` selectors are simplified to `IsEqualTo` (class name suffix stripped)
 - Weak properties always get `[NullAllowed]`
 - Inside `NS_ASSUME_NONNULL` scope: only explicitly nullable types get `[NullAllowed]`; outside scope: all object pointers get `[NullAllowed]`
 - ObjC categories are merged into parent class interfaces when the parent is available (including `SWIFT_EXTENSION` categories)
@@ -168,7 +184,7 @@ CSharpBindingGenerator.MergeCategories(headers);
   - `@optional` properties are decomposed into getter/setter method pairs (custom getter selectors used when available)
 - `NSNotificationName` typed extern constants get `[Notification]` attribute
 - Methods with completion handler parameters (ending in `completion:`, `completionHandler:`, `completionBlock:`) get `[Async]` — only on class methods, not protocol methods
-- Acronyms in method names are normalized: URL→Url, PDF→Pdf, HUD→Hud, HTML→Html, JSON→Json
+- Acronyms in method names are normalized: URL→Url, PDF→Pdf, HUD→Hud, HTML→Html, JSON→Json, UID→Uid, XMP→Xmp
 - Typedef aliases are resolved to their base types for correct C# type mapping
 - Both leading and trailing `const` qualifiers are stripped during type mapping
 - Preprocessor directives (`#if`, `#endif`) inside protocol conformance lists are skipped

@@ -124,7 +124,7 @@ src/NSSharp/
 dotnet test NSSharp.slnx
 ```
 
-168 tests covering lexer, parser, JSON serializer, binding generator, macro heuristic scenarios, and tests from dotnet/macios sharpie PR #24622.
+185 tests covering lexer, parser, JSON serializer, binding generator, macro heuristic scenarios, and tests from dotnet/macios sharpie PR #24622.
 
 ## Known Limitations
 

@@ -135,6 +135,20 @@ public static class ObjCTypeMapper
         // Strip nullability annotations
         type = StripNullability(type);
 
+        // Strip ObjC parameter direction qualifiers (out, in, inout, bycopy, byref, oneway)
+        foreach (var qual in new[] { "out ", "in ", "inout ", "bycopy ", "byref ", "oneway " })
+        {
+            if (type.StartsWith(qual) && type.Length > qual.Length)
+                type = type[qual.Length..].Trim();
+        }
+
+        // Strip IB annotations and other type qualifiers
+        foreach (var attr in new[] { "IBInspectable ", "IBOutlet ", "__block " })
+        {
+            if (type.StartsWith(attr))
+                type = type[attr.Length..].Trim();
+        }
+
         // Strip __kindof
         if (type.StartsWith("__kindof "))
             type = type["__kindof ".Length..].Trim();
@@ -213,8 +227,17 @@ public static class ObjCTypeMapper
                 return elementType + " []";
             }
 
-            // NSDictionary<K, V> → just NSDictionary for now
-            // NSSet<T> → just NSSet for now
+            // NSDictionary<K, V> and NSSet<T> — preserve generics with mapped types
+            if (baseType is "NSDictionary" or "NSMutableDictionary" && !string.IsNullOrEmpty(genericParam))
+            {
+                var mappedParams = MapGenericParams(genericParam);
+                return MapType(baseType) + "<" + mappedParams + ">";
+            }
+            if (baseType is "NSSet" or "NSMutableSet" or "NSOrderedSet" or "NSMutableOrderedSet" && !string.IsNullOrEmpty(genericParam))
+            {
+                var mappedParams = MapGenericParams(genericParam);
+                return MapType(baseType) + "<" + mappedParams + ">";
+            }
 
             // ClassName<Protocol> (e.g., UIView<PSPDFAnnotationPresenting>) → IProtocol
             // When a non-collection class conforms to a protocol, use the protocol interface
@@ -290,6 +313,43 @@ public static class ObjCTypeMapper
         return "Action";
     }
 
+    /// <summary>Splits and maps generic parameters, handling nested generics.</summary>
+    private static string MapGenericParams(string genericParam)
+    {
+        var parts = SplitGenericParams(genericParam);
+        return string.Join(", ", parts.Select(p => MapGenericParamType(p.Trim())));
+    }
+
+    /// <summary>Maps a type inside a generic parameter, preserving Foundation class names.</summary>
+    private static string MapGenericParamType(string objcType)
+    {
+        var mapped = MapType(objcType);
+        // In generic constraints, Foundation types must stay as their class names
+        // (e.g., NSDictionary<NSString, V> requires NSObject subclasses)
+        if (mapped == "string") return "NSString";
+        return mapped;
+    }
+
+    /// <summary>Splits generic params at top-level commas, respecting nested angle brackets.</summary>
+    private static List<string> SplitGenericParams(string param)
+    {
+        var result = new List<string>();
+        int depth = 0;
+        int start = 0;
+        for (int i = 0; i < param.Length; i++)
+        {
+            if (param[i] == '<') depth++;
+            else if (param[i] == '>') depth--;
+            else if (param[i] == ',' && depth == 0)
+            {
+                result.Add(param[start..i]);
+                start = i + 1;
+            }
+        }
+        result.Add(param[start..]);
+        return result;
+    }
+
     private static string StripNullability(string type)
     {
         string[] annotations = ["_Nullable", "_Nonnull", "_Null_unspecified",
@@ -317,18 +377,57 @@ public static class ObjCTypeMapper
 
         // Single-part selector (no colons) → PascalCase
         if (!selector.Contains(':'))
-            return PascalCase(selector);
+            return PascalCase(RenameBlockToAction(selector));
 
         var parts = selector.TrimEnd(':').Split(':');
+        parts[0] = RenameBlockToAction(parts[0]);
+
+        // Handle "isEqualTo<ClassName>:" pattern → strip class name suffix, keep "isEqualTo"
+        if (parts.Length == 1 && parts[0].StartsWith("isEqualTo", StringComparison.Ordinal)
+            && parts[0].Length > "isEqualTo".Length && char.IsUpper(parts[0]["isEqualTo".Length]))
+        {
+            return PascalCase("isEqualTo");
+        }
 
         // Protocol/delegate methods: strip the first part if it looks like a sender parameter
         // e.g., "annotationGridViewController:didSelectAnnotationSet:" → use second part onward
         if (isProtocolMethod && parts.Length >= 2)
         {
             var firstPart = parts[0];
-            if (IsSenderParameterName(firstPart))
+            // Check if first part is a sender: either ends with a known suffix,
+            // or any later part starts with a delegate verb (did/will/should/can/requested/failed)
+            string[] delegateVerbs = ["did", "will", "should", "can", "requested", "failed"];
+            bool laterPartHasVerb = false;
+            for (int i = 1; i < parts.Length; i++)
+            {
+                foreach (var vp in delegateVerbs)
+                {
+                    if (parts[i].StartsWith(vp, StringComparison.Ordinal) &&
+                        parts[i].Length > vp.Length && char.IsUpper(parts[i][vp.Length]))
+                    {
+                        laterPartHasVerb = true;
+                        break;
+                    }
+                }
+                if (laterPartHasVerb) break;
+            }
+
+            if (IsSenderParameterName(firstPart) || laterPartHasVerb)
             {
                 parts = parts[1..];
+
+                // Search all remaining parts (including single part) for delegate verb
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    foreach (var vp in delegateVerbs)
+                    {
+                        if (parts[i].StartsWith(vp, StringComparison.Ordinal) &&
+                            parts[i].Length > vp.Length && char.IsUpper(parts[i][vp.Length]))
+                        {
+                            return PascalCase(StripTrailingParameterContext(parts[i]));
+                        }
+                    }
+                }
             }
         }
 
@@ -341,7 +440,7 @@ public static class ObjCTypeMapper
                 return PascalCase(StripTrailingParameterContext(stripped));
         }
 
-        // Use only the first part (PascalCased), with trailing parameter context stripped
+        // Use the first part (PascalCased), with trailing parameter context stripped
         return PascalCase(StripTrailingParameterContext(parts[0]));
     }
 
@@ -353,7 +452,7 @@ public static class ObjCTypeMapper
     {
         // Generic preposition patterns: With*, At*, For*, From*, In*, On*, Of* + uppercase
         // e.g., "configureWithDocument" → "configure", "canActivateAtPoint" → "canActivate"
-        string[] prepositions = ["With", "At", "For", "From", "In", "On", "Of"];
+        string[] prepositions = ["With", "At", "For", "From", "In", "On", "Of", "Using", "By"];
         foreach (var prep in prepositions)
         {
             int idx = part.LastIndexOf(prep, StringComparison.Ordinal);
@@ -370,12 +469,43 @@ public static class ObjCTypeMapper
         return part;
     }
 
+    /// <summary>
+    /// Renames "Block" to "Action" in method names (e.g., performBlock → performAction).
+    /// Only applies when "Block" appears as a word boundary (preceded by lowercase letter or at start).
+    /// </summary>
+    private static string RenameBlockToAction(string name)
+    {
+        int idx = name.IndexOf("Block", StringComparison.Ordinal);
+        if (idx < 0) return name;
+        // Must be at a word boundary: preceded by lowercase or at start
+        if (idx > 0 && !char.IsLower(name[idx - 1])) return name;
+        // After "Block": must be end, uppercase, or specific continuations
+        int after = idx + 5;
+        if (after < name.Length && !char.IsUpper(name[after]) && name[after] != ':')
+            return name;
+        return name[..idx] + "Action" + name[after..];
+    }
+
     /// <summary>Converts a name to PascalCase, normalizing common acronyms.</summary>
     public static string PascalCase(string name)
     {
         if (string.IsNullOrEmpty(name)) return name;
         var result = char.ToUpperInvariant(name[0]) + name[1..];
         return NormalizeAcronyms(result);
+    }
+
+    /// <summary>Normalizes a parameter name, lowering acronyms to match .NET conventions.</summary>
+    public static string NormalizeParamName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        var result = NormalizeAcronyms(name);
+        // If the entire name is an acronym that got title-cased (e.g., JWT→Jwt), lowercase it entirely
+        if (result.Length > 1 && char.IsUpper(result[0]) && result[1..].All(char.IsLower) &&
+            name.All(char.IsUpper))
+        {
+            return result.ToLowerInvariant();
+        }
+        return result;
     }
 
     /// <summary>
@@ -387,11 +517,21 @@ public static class ObjCTypeMapper
         // Common acronyms that should be normalized in method names
         // Only normalize when they appear as part of a larger word, not standalone
         (string acronym, string normalized)[] acronyms = [
+            ("UUID", "Uuid"),   // Must come before URL/URI/UID to avoid partial matches
+            ("HTTPS", "Https"), // Must come before HTTP
+            ("HTTP", "Http"),
             ("URL", "Url"),
+            ("URI", "Uri"),
+            ("UID", "Uid"),     // Must come after UUID
             ("PDF", "Pdf"),
             ("HUD", "Hud"),
             ("HTML", "Html"),
             ("JSON", "Json"),
+            ("JWT", "Jwt"),
+            ("XML", "Xml"),
+            ("XMP", "Xmp"),
+            ("API", "Api"),
+            ("SDK", "Sdk"),
         ];
 
         foreach (var (acronym, normalized) in acronyms)
@@ -399,13 +539,32 @@ public static class ObjCTypeMapper
             int idx = 0;
             while ((idx = name.IndexOf(acronym, idx, StringComparison.Ordinal)) >= 0)
             {
-                // Don't normalize if the acronym is at the very start of the name
-                // and is followed by nothing or a lowercase letter (standalone usage)
                 int afterIdx = idx + acronym.Length;
-
-                // Replace the acronym with its normalized form
                 name = name[..idx] + normalized + name[afterIdx..];
                 idx += normalized.Length;
+            }
+        }
+
+        // Handle "ID" separately — only at end of name or followed by uppercase
+        // to avoid matching inside words like "Identity", "Hidden"
+        {
+            int idx = 0;
+            while ((idx = name.IndexOf("ID", idx, StringComparison.Ordinal)) >= 0)
+            {
+                int afterIdx = idx + 2;
+                bool atEnd = afterIdx >= name.Length;
+                bool followedByUpper = !atEnd && char.IsUpper(name[afterIdx]);
+                bool precededByLower = idx > 0 && char.IsLower(name[idx - 1]);
+
+                if (precededByLower && (atEnd || followedByUpper))
+                {
+                    name = name[..idx] + "Id" + name[afterIdx..];
+                    idx += 2;
+                }
+                else
+                {
+                    idx += 2;
+                }
             }
         }
 
@@ -429,7 +588,11 @@ public static class ObjCTypeMapper
         "Controller", "View", "Manager", "Delegate", "Bar", "Cell",
         "Picker", "Inspector", "Toolbar", "Button", "Item", "Store",
         "Search", "HUD", "Scrubber", "Presenter", "Container",
-        "Coordinator",
+        "Coordinator", "Client", "Provider", "Service", "Handler",
+        "Source", "Session", "Connection", "Cache",
+        "List", "Document", "Parser", "Signer", "Editor",
+        "Checkpointer", "Task", "Feature", "Object", "Library",
+        "Processor", "Formatter", "Renderer",
     ];
 
     /// <summary>

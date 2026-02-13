@@ -108,11 +108,12 @@ string Title { get; set; }
 | ObjC Attribute | C# ArgumentSemantic | When to Use |
 |---|---|---|
 | `copy` | `ArgumentSemantic.Copy` | Always specify |
-| `retain` / `strong` | `ArgumentSemantic.Retain` | Explicit or default for object pointers |
-| `assign` | `ArgumentSemantic.Assign` | For value types or `weak` |
-| `weak` | `ArgumentSemantic.Assign` | Plus `[NullAllowed]` |
-| *(none, object pointer)* | `ArgumentSemantic.Retain` | Default for object pointers without explicit semantic |
+| `retain` / `strong` | `ArgumentSemantic.Strong` | When explicitly declared |
+| `assign` | `ArgumentSemantic.Assign` | For value types or explicit |
+| `weak` | `ArgumentSemantic.Weak` | Plus `[NullAllowed]` |
+| *(none, object pointer)* | *(omit)* | Don't infer a default |
 | *(none, primitive)* | *(omit)* | Don't specify ArgumentSemantic for primitives |
+| *(none, enum/value type)* | `ArgumentSemantic.Assign` | Inferred for non-primitive value types |
 
 ```objc
 @property (nonatomic, copy) NSString *name;
@@ -126,16 +127,16 @@ string Title { get; set; }
 [Export ("name", ArgumentSemantic.Copy)]
 string Name { get; set; }
 
-[Export ("contentView", ArgumentSemantic.Retain)]
+[Export ("contentView", ArgumentSemantic.Strong)]
 UIView ContentView { get; set; }
 
-[NullAllowed, Export ("delegate", ArgumentSemantic.Assign)]
+[NullAllowed, Export ("delegate", ArgumentSemantic.Weak)]
 IMyDelegate Delegate { get; set; }
 
 [Export ("count")]
 nint Count { get; set; }
 
-[Export ("tintColor", ArgumentSemantic.Retain)]   // default for object pointers
+[Export ("tintColor")]   // no default semantic for object pointers
 UIColor TintColor { get; set; }
 ```
 
@@ -880,10 +881,10 @@ interface MyDelegate { ... }
 UIView View { get; set; }
 ```
 
-**Right**: Include Retain (or Copy/Assign) for object pointers
+**Right**: Only include ArgumentSemantic when explicitly declared in ObjC property attributes
 ```csharp
-[Export ("view", ArgumentSemantic.Retain)]
-UIView View { get; set; }
+[Export ("view")]
+UIView View { get; set; }  // no default semantic needed
 ```
 
 ### 3. Wrong Selector for Multi-Part Methods

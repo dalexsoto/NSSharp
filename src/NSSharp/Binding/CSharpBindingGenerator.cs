@@ -186,6 +186,8 @@ public sealed class CSharpBindingGenerator
             {
                 var v = e.Values[i];
                 var enumMemberName = StripEnumPrefix(v.Name, name);
+                // Normalize acronyms in enum member names (e.g., InvalidURL → InvalidUrl)
+                enumMemberName = ObjCTypeMapper.PascalCase(enumMemberName);
                 var comma = i < e.Values.Count - 1 ? "," : "";
 
                 if (v.Value != null)
@@ -202,11 +204,32 @@ public sealed class CSharpBindingGenerator
 
     private static string StripEnumPrefix(string memberName, string enumName)
     {
-        // Try to strip the enum name prefix from member names
-        if (memberName.StartsWith(enumName, StringComparison.Ordinal) &&
-            memberName.Length > enumName.Length)
+        // Try exact enum name prefix first
+        var stripped = TryStripPrefix(memberName, enumName);
+        if (stripped != memberName) return stripped;
+
+        // Try common ObjC enum naming patterns where the prefix is a shortened form
+        // e.g., enum PSPDFInstantErrorCode → values prefixed with PSPDFInstantError (without Code/Type/Kind/Status/Style/Mode)
+        string[] suffixes = ["Code", "Type", "Kind", "Status", "Style", "Mode", "State", "Options", "Flag", "Flags"];
+        foreach (var suffix in suffixes)
         {
-            var rest = memberName[enumName.Length..];
+            if (enumName.EndsWith(suffix, StringComparison.Ordinal) && enumName.Length > suffix.Length)
+            {
+                var shortPrefix = enumName[..^suffix.Length];
+                stripped = TryStripPrefix(memberName, shortPrefix);
+                if (stripped != memberName) return stripped;
+            }
+        }
+
+        return memberName;
+    }
+
+    private static string TryStripPrefix(string memberName, string prefix)
+    {
+        if (memberName.StartsWith(prefix, StringComparison.Ordinal) &&
+            memberName.Length > prefix.Length)
+        {
+            var rest = memberName[prefix.Length..];
             // Handle underscore separator
             if (rest.StartsWith('_'))
                 rest = rest[1..];
@@ -373,9 +396,10 @@ public sealed class CSharpBindingGenerator
 
         var selector = method.Selector;
         // Check if the last selector part ends with completion:/completionHandler:/completionBlock:
-        if (selector.EndsWith("completion:") ||
-            selector.EndsWith("completionHandler:") ||
-            selector.EndsWith("completionBlock:"))
+        // (case-insensitive for the leading letter since it follows a preposition like "With")
+        if (selector.EndsWith("completion:", StringComparison.OrdinalIgnoreCase) ||
+            selector.EndsWith("completionHandler:", StringComparison.OrdinalIgnoreCase) ||
+            selector.EndsWith("completionBlock:", StringComparison.OrdinalIgnoreCase))
             return true;
 
         // Also check the last parameter's type — if it's a block type
@@ -508,10 +532,18 @@ public sealed class CSharpBindingGenerator
                 AppendLine($"[BaseType (typeof ({iface.Superclass}))]");
             }
 
+            // Classes with "Abstract" in their name get [Abstract] attribute
+            if (iface.Name.Contains("Abstract") && iface.Category == null)
+                AppendLine("[Abstract]");
+
             // Check for disabled default constructor
             bool hasInit = iface.InstanceMethods.Any(m =>
                 m.Selector.StartsWith("init") && m.ReturnType == "instancetype");
-            // Note: NS_UNAVAILABLE on init would need more parsing; skip for now
+            bool hasZeroArgInit = iface.InstanceMethods.Any(m =>
+                m.Selector == "init" && m.ReturnType == "instancetype" && m.Parameters.Count == 0);
+            // DisableDefaultCtor only when init is explicitly marked unavailable
+            if (iface.IsInitUnavailable && iface.Category == null)
+                AppendLine("[DisableDefaultCtor]");
 
             // Build type name and inheritance
             var typeName = iface.Category != null
@@ -527,9 +559,26 @@ public sealed class CSharpBindingGenerator
             AppendLine("{");
             _indent++;
 
-            // Properties
+            // Properties — categories use getter/setter method decomposition
+            bool isCategory = iface.Category != null;
             foreach (var prop in iface.Properties)
-                EmitProperty(prop, isProtocol: false);
+            {
+                if (isCategory)
+                {
+                    // Force optional-style decomposition for category properties (no [Abstract])
+                    var catProp = new ObjCProperty
+                    {
+                        Name = prop.Name, Type = prop.Type, Attributes = prop.Attributes,
+                        IsNullable = prop.IsNullable, InNonnullScope = prop.InNonnullScope,
+                        IsOptional = true // force method decomposition without [Abstract]
+                    };
+                    EmitProperty(catProp, isProtocol: true);
+                }
+                else
+                {
+                    EmitProperty(prop, isProtocol: false);
+                }
+            }
 
             // Instance methods
             foreach (var m in iface.InstanceMethods)
@@ -572,7 +621,11 @@ public sealed class CSharpBindingGenerator
         AppendLine($"[Export (\"{method.Selector}\")]");
 
         var csParams = MapMethodParameters(method.Parameters, method.InNonnullScope);
-        var paramList = string.Join(", ", csParams.Select(p => $"{p.type} {p.name}"));
+        var paramList = string.Join(", ", csParams.Select(p =>
+        {
+            var prefix = p.nullable ? "[NullAllowed] " : "";
+            return $"{prefix}{p.type} {p.name}";
+        }));
 
         AppendLine($"NativeHandle Constructor ({paramList});");
         AppendLine();
@@ -594,6 +647,11 @@ public sealed class CSharpBindingGenerator
 
         var csType = ObjCTypeMapper.MapType(prop.Type);
         var csName = ObjCTypeMapper.PascalCase(prop.Name);
+
+        // Block-type properties: rename "Block" suffix to "Handler" (Sharpie convention)
+        if (csName.EndsWith("Block", StringComparison.Ordinal) && IsBlockType(prop.Type))
+            csName = csName[..^"Block".Length] + "Handler";
+
         var isReadonly = prop.Attributes.Contains("readonly");
         var isClassProp = prop.Attributes.Contains("class");
 
@@ -607,7 +665,7 @@ public sealed class CSharpBindingGenerator
             attrParts.Add("NullAllowed");
 
         // Determine argument semantic
-        var semantic = GetArgumentSemantic(prop.Attributes, prop.Type);
+        var semantic = GetArgumentSemantic(prop.Attributes, prop.Type, isReadonly);
         var exportParts = $"\"{prop.Name}\"";
         if (semantic != null)
             exportParts += $", ArgumentSemantic.{semantic}";
@@ -663,13 +721,18 @@ public sealed class CSharpBindingGenerator
         if (!prop.IsOptional)
         {
             AppendLine("[Abstract]");
-            if (isNullable)
-                AppendLine("[NullAllowed]");
             if (isClassProp)
                 AppendLine("[Static]");
-            AppendLine($"[Export (\"{prop.Name}\")]");
+
+            // Combine NullAllowed with Export on one line (sharpie convention)
+            if (isNullable)
+                AppendLine($"[NullAllowed, Export (\"{prop.Name}\")]");
+            else
+                AppendLine($"[Export (\"{prop.Name}\")]");
 
             var csName = ObjCTypeMapper.PascalCase(prop.Name);
+            if (csName.EndsWith("Block", StringComparison.Ordinal) && IsBlockType(prop.Type))
+                csName = csName[..^"Block".Length] + "Handler";
             string accessors;
             if (customGetter != null)
                 accessors = isReadonly
@@ -691,7 +754,13 @@ public sealed class CSharpBindingGenerator
             AppendLine("[Static]");
         AppendLine($"[Export (\"{getterSelector}\")]");
 
-        AppendLine($"{csType} Get{ObjCTypeMapper.PascalCase(prop.Name)} ();");
+        var propCsName = ObjCTypeMapper.PascalCase(prop.Name);
+        if (propCsName.EndsWith("Block", StringComparison.Ordinal) && IsBlockType(prop.Type))
+            propCsName = propCsName[..^"Block".Length] + "Handler";
+
+        // Skip "Get" prefix for verb-prefixed properties (Allow, Should, Is, Has, etc.)
+        var getterPrefix = IsVerbPrefixedName(propCsName) ? "" : "Get";
+        AppendLine($"{csType} {getterPrefix}{propCsName} ();");
         AppendLine();
 
         // Setter (if not readonly)
@@ -703,21 +772,48 @@ public sealed class CSharpBindingGenerator
 
             var nullAttr = isNullable ? "[NullAllowed] " : "";
             var paramName = char.ToLower(prop.Name[0]) + prop.Name.Substring(1);
-            AppendLine($"void Set{ObjCTypeMapper.PascalCase(prop.Name)} ({nullAttr}{csType} {paramName});");
+            AppendLine($"void Set{propCsName} ({nullAttr}{csType} {paramName});");
             AppendLine();
         }
     }
 
-    private static string? GetArgumentSemantic(List<string> attributes, string type = "")
+    private static string? GetArgumentSemantic(List<string> attributes, string type = "", bool isReadonly = false)
     {
+        // Explicit attributes always emitted
         if (attributes.Contains("copy")) return "Copy";
         if (attributes.Contains("retain") || attributes.Contains("strong")) return "Strong";
         if (attributes.Contains("weak")) return "Weak";
         if (attributes.Contains("assign")) return "Assign";
-        // Default: Strong for object pointer types without explicit semantic (matches sharpie)
-        if (type.Contains('*') || type == "id" || type.StartsWith("id<"))
-            return "Strong";
+
+        // Inference for readwrite properties without explicit semantic
+        if (!isReadonly && !string.IsNullOrEmpty(type))
+        {
+            // Object pointers → Strong
+            if (type.Contains('*') || type == "id" || type.StartsWith("id<"))
+                return "Strong";
+            // Non-primitive value types (enums, structs) → Assign
+            if (!IsCommonPrimitiveType(type))
+                return "Assign";
+        }
         return null;
+    }
+
+    private static bool IsCommonPrimitiveType(string type)
+    {
+        string[] primitives = [
+            "BOOL", "bool", "int", "NSInteger", "NSUInteger", "CGFloat",
+            "float", "double", "long", "unsigned", "char", "short",
+            "NSTimeInterval", "CLLocationDegrees", "NSStringEncoding",
+            "void", "IBAction", "SEL", "Class",
+        ];
+        // Strip IB annotations before checking
+        var trimmed = type.Trim();
+        foreach (var attr in new[] { "IBInspectable ", "IBOutlet ", "__block " })
+        {
+            if (trimmed.StartsWith(attr))
+                trimmed = trimmed[attr.Length..].Trim();
+        }
+        return Array.Exists(primitives, p => trimmed == p || trimmed.StartsWith(p + " "));
     }
 
     #endregion
@@ -742,12 +838,31 @@ public sealed class CSharpBindingGenerator
             "Allow", "Deny", "Accept", "Reject", "Submit", "Forward",
             "Match", "Common", "Seek", "Override", "Invalidate",
             "Try", "Request", "Restore", "Fetch", "Contains", "Dequeue",
+            "Download", "Upload", "Attempt", "List", "Purge", "Merge", "Split",
+            "Sync", "Connect", "Disconnect", "Attach", "Detach", "Bind", "Unbind",
+            "Flush", "Swap", "Move", "Copy", "Rename", "Replace", "Wrap", "Unwrap",
+            "Generate", "Write", "Read", "Parse", "Build", "Compute", "Calculate",
+            "Find", "Search", "Lookup", "Resolve", "Annotate", "Transform",
+            "Hit", "Measure", "Render", "Lock", "Unlock", "Sign", "Encrypt", "Decrypt",
+            "From", "Make", "Maybe", "Ensure", "Finish", "Duplicate", "Rotate",
+            "Cleanup", "Evict", "Convert", "Inject", "Output", "Modify",
         ];
 
         foreach (var prefix in verbPrefixes)
         {
-            if (name.StartsWith(prefix, StringComparison.Ordinal))
+            if (name.StartsWith(prefix, StringComparison.Ordinal)
+                && (name.Length == prefix.Length || char.IsUpper(name[prefix.Length])))
                 return true;
+        }
+        // Check for "Re" + verb pattern (e.g., "ReEncrypt", "ReIndex")
+        if (name.StartsWith("Re", StringComparison.Ordinal) && name.Length > 2 && char.IsUpper(name[2]))
+        {
+            var afterRe = name[2..];
+            foreach (var prefix in verbPrefixes)
+            {
+                if (afterRe.StartsWith(prefix, StringComparison.Ordinal))
+                    return true;
+            }
         }
         return false;
     }
@@ -771,13 +886,41 @@ public sealed class CSharpBindingGenerator
         var csMethodName = ObjCTypeMapper.SelectorToMethodName(method.Selector, isProtocolMethod);
         var csParams = MapMethodParameters(method.Parameters, method.InNonnullScope);
 
-        // Add "Get" prefix for non-void getter-like methods with parameters
-        // Methods with parameters that return non-void and don't start with a verb get "Get" prefix
-        if (csReturnType != "void" && !IsVerbPrefixedName(csMethodName)
-            && !method.Selector.StartsWith("init", StringComparison.Ordinal)
-            && method.Parameters.Count > 0)
+        // Static factory method naming: "<className>With<Param>:" → "From<Param>"
+        // Only when first part matches enclosing class name (e.g., "presetWithColor:" on PSPDFColorPreset)
+        if (isStatic && method.ReturnType.Contains("instancetype") && !method.Selector.StartsWith("init")
+            && enclosingTypeName != null)
         {
-            csMethodName = "Get" + csMethodName;
+            var firstPart = method.Selector.Split(':')[0];
+            int withIdx = firstPart.IndexOf("With", StringComparison.Ordinal);
+            if (withIdx > 0 && withIdx + 4 < firstPart.Length && char.IsUpper(firstPart[withIdx + 4]))
+            {
+                var prefix = firstPart[..withIdx];
+                // Check if the prefix matches the end of the class name (case-insensitive)
+                if (enclosingTypeName.EndsWith(ObjCTypeMapper.PascalCase(prefix), StringComparison.OrdinalIgnoreCase))
+                {
+                    var afterWith = firstPart[(withIdx + 4)..];
+                    csMethodName = "From" + ObjCTypeMapper.PascalCase(afterWith);
+                }
+            }
+        }
+
+        // Add "Get" prefix for getter-like methods
+        // - Methods with params that return non-void/non-bool and don't start with a verb
+        // - Protocol methods with no params that return non-void/non-bool and don't start with a verb
+        // Boolean-returning methods are predicates and don't need "Get"
+        // Static factory methods returning instancetype get "Create" instead of "Get"
+        bool needsGetPrefix = csReturnType != "void"
+            && csReturnType != "bool"
+            && !IsVerbPrefixedName(csMethodName)
+            && !method.Selector.StartsWith("init", StringComparison.Ordinal)
+            && (method.Parameters.Count > 0 || (isProtocolMethod && method.Parameters.Count == 0));
+        if (needsGetPrefix)
+        {
+            if (isStatic && method.ReturnType.Contains("instancetype"))
+                csMethodName = "Create" + csMethodName;
+            else
+                csMethodName = "Get" + csMethodName;
         }
 
         // NullAllowed on return
@@ -823,13 +966,14 @@ public sealed class CSharpBindingGenerator
         foreach (var p in parameters)
         {
             var csType = ObjCTypeMapper.MapType(p.Type);
+            var csName = ObjCTypeMapper.NormalizeParamName(p.Name);
             bool isNullable = p.IsNullable || (!inNonnullScope && IsObjectPointerType(p.Type));
 
             // out NSError parameters are always nullable in Xamarin bindings
             if (csType == "out NSError")
                 isNullable = true;
 
-            result.Add((csType, p.Name, isNullable));
+            result.Add((csType, csName, isNullable));
         }
         return result;
     }
@@ -912,6 +1056,22 @@ public sealed class CSharpBindingGenerator
     {
         return type is "NSInteger" or "NSUInteger" or "NSTimeInterval"
             or "NSComparisonResult" or "NSRange" or "NSZone";
+    }
+
+    /// <summary>Returns true if the ObjC type is a block type or block typedef.</summary>
+    private static bool IsBlockType(string objcType)
+    {
+        var t = objcType.Trim();
+        // Direct block syntax: void (^)(...)
+        if (t.Contains("(^)") || t.Contains("(^_") || t.Contains("(^ _"))
+            return true;
+        // Block typedefs commonly end in Block, Handler, Completion, Callback
+        if (t.EndsWith("Block", StringComparison.Ordinal) ||
+            t.EndsWith("Handler", StringComparison.Ordinal) ||
+            t.EndsWith("Completion", StringComparison.Ordinal) ||
+            t.EndsWith("Callback", StringComparison.Ordinal))
+            return true;
+        return false;
     }
 
     #endregion

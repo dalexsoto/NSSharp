@@ -124,6 +124,13 @@ public sealed class ObjCParser
             }
             else
             {
+                // Detect init-unavailable macros (e.g., PSPDF_EMPTY_INIT_UNAVAILABLE)
+                if (Check(TokenKind.Identifier))
+                {
+                    var val = Peek().Value;
+                    if (val.Contains("INIT_UNAVAILABLE") || val.Contains("EMPTY_INIT"))
+                        iface.IsInitUnavailable = true;
+                }
                 Advance();
             }
         }
@@ -164,12 +171,12 @@ public sealed class ObjCParser
             Expect(TokenKind.CloseAngle, "Expected '>'");
         }
 
-        ParseProtocolBody(proto);
+        ParseProtocolBody(proto, header);
         Expect(TokenKind.AtEnd, "Expected '@end'");
         header.Protocols.Add(proto);
     }
 
-    private void ParseProtocolBody(ObjCProtocol proto)
+    private void ParseProtocolBody(ObjCProtocol proto, ObjCHeader header)
     {
         bool isOptional = false;
 
@@ -203,6 +210,11 @@ public sealed class ObjCParser
                     proto.OptionalClassMethods.Add(method);
                 else
                     proto.RequiredClassMethods.Add(method);
+            }
+            else if (Check(TokenKind.Typedef))
+            {
+                // typedef inside protocol body (e.g., NS_OPTIONS declared inline)
+                ParseTypedef(header);
             }
             else
             {
@@ -407,12 +419,23 @@ public sealed class ObjCParser
         return enumNode;
     }
 
-    public ObjCEnum ParseNSEnum(bool isOptions)
+    public ObjCEnum ParseNSEnum(bool isOptions, bool isErrorEnum = false)
     {
         var enumNode = new ObjCEnum { IsOptions = isOptions };
 
         Expect(TokenKind.OpenParen, "Expected '(' after NS_ENUM/NS_OPTIONS");
-        enumNode.BackingType = Advance().Value; // e.g., NSInteger, NSUInteger
+
+        if (isErrorEnum)
+        {
+            // NS_ERROR_ENUM(ErrorDomain, EnumName) — backing type is implicitly NSInteger
+            Advance(); // skip error domain identifier
+            enumNode.BackingType = "NSInteger";
+        }
+        else
+        {
+            enumNode.BackingType = Advance().Value; // e.g., NSInteger, NSUInteger
+        }
+
         Expect(TokenKind.Comma, "Expected ','");
         enumNode.Name = Expect(TokenKind.Identifier, "Expected enum name").Value;
         Expect(TokenKind.CloseParen, "Expected ')'");
@@ -499,8 +522,9 @@ public sealed class ObjCParser
         if (Check(TokenKind.Identifier) && Peek().Value is "NS_ENUM" or "NS_OPTIONS" or "NS_CLOSED_ENUM" or "NS_ERROR_ENUM")
         {
             bool isOptions = Peek().Value == "NS_OPTIONS";
+            bool isErrorEnum = Peek().Value == "NS_ERROR_ENUM";
             Advance(); // consume NS_ENUM/NS_OPTIONS/NS_CLOSED_ENUM/NS_ERROR_ENUM
-            var enumNode = ParseNSEnum(isOptions);
+            var enumNode = ParseNSEnum(isOptions, isErrorEnum);
             header.Enums.Add(enumNode);
             Match(TokenKind.Semicolon);
             return;

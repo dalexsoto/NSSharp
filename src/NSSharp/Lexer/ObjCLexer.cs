@@ -235,6 +235,10 @@ public sealed class ObjCLexer
             if (ident == "PSPDF_EXPORT" || _externMacros.Contains(ident))
                 return new Token(TokenKind.Extern, ident, startLine, startCol);
 
+            // Init-unavailable macros: preserve as identifiers so parser can detect them
+            if (ident.Contains("INIT_UNAVAILABLE") || ident.Contains("EMPTY_INIT"))
+                return new Token(TokenKind.Identifier, ident, startLine, startCol);
+
             // UPPER_SNAKE_CASE heuristic: skip likely macros
             if (_macroHeuristic && IsLikelyMacro(ident))
             {

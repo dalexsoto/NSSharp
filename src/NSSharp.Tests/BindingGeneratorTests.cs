@@ -187,8 +187,8 @@ public class BindingGeneratorTests
             +(instancetype)progressWithText:(NSString *)text;
             @end
             """);
-        Assert.Contains("PSPDFStatusHUDItem GetProgress", cs);
-        Assert.DoesNotContain("instancetype GetProgress", cs);
+        Assert.Contains("PSPDFStatusHUDItem CreateProgress", cs);
+        Assert.DoesNotContain("instancetype CreateProgress", cs);
     }
 
     [Fact]
@@ -715,6 +715,207 @@ NS_ASSUME_NONNULL_END");
         Assert.Contains("[Bind (\"isEnabled\")]", cs);
         Assert.Contains("get;", cs);
         Assert.DoesNotContain("GetEnabled", cs);
+    }
+
+    #endregion
+
+    #region Iteration improvements
+
+    [Fact]
+    public void OutNSError_AlwaysGetsNullAllowed()
+    {
+        var cs = GenerateBinding(@"
+NS_ASSUME_NONNULL_BEGIN
+@protocol Foo <NSObject>
+- (BOOL)doSomething:(NSError **)error;
+@end
+NS_ASSUME_NONNULL_END");
+        Assert.Contains("[NullAllowed] out NSError error", cs);
+    }
+
+    [Fact]
+    public void OutNSError_InConstructor_GetsNullAllowed()
+    {
+        var cs = GenerateBinding(@"
+NS_ASSUME_NONNULL_BEGIN
+@interface Foo : NSObject
+- (instancetype)initWithURL:(NSURL *)url error:(NSError **)error;
+@end
+NS_ASSUME_NONNULL_END");
+        Assert.Contains("[NullAllowed] out NSError error", cs);
+    }
+
+    [Fact]
+    public void ObjCOutKeyword_NoDoubleOut()
+    {
+        var result = ObjCTypeMapper.MapType("out NSString * _Nullable __strong * _Nonnull");
+        Assert.DoesNotContain("out out", result);
+        Assert.StartsWith("out ", result);
+    }
+
+    [Fact]
+    public void DelegateMethodNaming_StripsSenderAndFindsVerb()
+    {
+        var name = ObjCTypeMapper.SelectorToMethodName("instantClient:didBeginSyncForDocumentDescriptor:", isProtocolMethod: true);
+        Assert.Equal("DidBeginSync", name);
+    }
+
+    [Fact]
+    public void DelegateMethodNaming_ThreePartVerbSearch()
+    {
+        var name = ObjCTypeMapper.SelectorToMethodName("instantClient:documentDescriptor:didFailDownloadWithError:", isProtocolMethod: true);
+        Assert.Equal("DidFailDownload", name);
+    }
+
+    [Fact]
+    public void TypedefEnumInsideProtocol_IsParsed()
+    {
+        var source = @"
+@protocol Foo <NSObject>
+typedef NS_OPTIONS(NSUInteger, FooState) {
+    FooStateA = 1 << 0,
+    FooStateB = 1 << 1,
+};
+@end";
+        var lexer = new ObjCLexer(source);
+        var tokens = lexer.Tokenize();
+        var parser = new ObjCParser(tokens);
+        var header = parser.Parse("test.h");
+        Assert.Single(header.Enums);
+        Assert.Equal("FooState", header.Enums[0].Name);
+        Assert.True(header.Enums[0].IsOptions);
+    }
+
+    [Fact]
+    public void GenericDictionary_PreservesFoundationTypes()
+    {
+        var result = ObjCTypeMapper.MapType("NSDictionary<NSString *, NSSet<NSString *> *> *");
+        Assert.Equal("NSDictionary<NSString, NSSet<NSString>>", result);
+    }
+
+    [Fact]
+    public void GenericSet_PreservesFoundationTypes()
+    {
+        var result = ObjCTypeMapper.MapType("NSSet<NSString *> *");
+        Assert.Equal("NSSet<NSString>", result);
+    }
+
+    [Fact]
+    public void ParamName_AcronymNormalization()
+    {
+        Assert.Equal("serverUrl", ObjCTypeMapper.NormalizeParamName("serverURL"));
+        Assert.Equal("jwt", ObjCTypeMapper.NormalizeParamName("JWT"));
+        Assert.Equal("validJwt", ObjCTypeMapper.NormalizeParamName("validJWT"));
+    }
+
+    [Fact]
+    public void IBInspectable_StrippedFromType()
+    {
+        var result = ObjCTypeMapper.MapType("IBInspectable BOOL");
+        Assert.Equal("bool", result);
+    }
+
+    [Fact]
+    public void PropertyName_IdNormalization()
+    {
+        Assert.Equal("UserId", ObjCTypeMapper.PascalCase("userID"));
+    }
+
+    [Fact]
+    public void CategoryProperties_DecomposedAsGetterMethods()
+    {
+        // Category without a parent class in the same header stays as a [Category] interface
+        var cs = GenerateBinding(@"
+@interface Bar (MyCat)
+@property (nonatomic, readonly) NSString *name;
+@end");
+        Assert.Contains("GetName", cs);
+        Assert.Contains("[Category]", cs);
+        Assert.DoesNotContain("[Abstract]", cs);
+    }
+
+    [Fact]
+    public void VerbPrefixes_DownloadAttemptList()
+    {
+        Assert.True(true); // Verified via integration: Download, Attempt, List verbs don't get Get prefix
+        var cs = GenerateBinding(@"
+@protocol Foo <NSObject>
+- (BOOL)downloadUsingJWT:(NSString *)jwt error:(NSError **)error;
+- (NSProgress *)attemptContentMigration:(NSError **)error;
+- (NSSet *)listCacheEntries:(NSError **)error;
+@end");
+        Assert.Contains("Download", cs);
+        Assert.Contains("AttemptContentMigration", cs);
+        Assert.Contains("ListCacheEntries", cs);
+        Assert.DoesNotContain("GetDownload", cs);
+        Assert.DoesNotContain("GetAttemptContentMigration", cs);
+        Assert.DoesNotContain("GetListCacheEntries", cs);
+    }
+
+    #endregion
+
+    #region Iteration 3 improvements
+
+    [Fact]
+    public void NSErrorEnum_BackingTypeIsNSInteger()
+    {
+        var source = @"
+typedef NS_ERROR_ENUM(FooDomain, FooErrorCode) {
+    FooErrorUnknown = 1,
+    FooErrorBad = 2,
+};";
+        var lexer = new ObjCLexer(source);
+        var tokens = lexer.Tokenize();
+        var parser = new ObjCParser(tokens);
+        var header = parser.Parse("test.h");
+        Assert.Single(header.Enums);
+        Assert.Equal("FooErrorCode", header.Enums[0].Name);
+        Assert.Equal("NSInteger", header.Enums[0].BackingType);
+    }
+
+    [Fact]
+    public void EnumPrefixStripping_ShortPrefix()
+    {
+        var cs = GenerateBinding(@"
+typedef NS_ERROR_ENUM(FooDomain, FooErrorCode) {
+    FooErrorUnknown = 1,
+    FooErrorBad = 2,
+};");
+        Assert.Contains("Unknown = 1,", cs);
+        Assert.Contains("Bad = 2", cs);
+        Assert.DoesNotContain("FooErrorUnknown", cs);
+        Assert.DoesNotContain("FooErrorBad", cs);
+    }
+
+    [Fact]
+    public void EnumMemberAcronymNormalization()
+    {
+        var cs = GenerateBinding(@"
+typedef NS_ENUM(NSInteger, FooType) {
+    FooTypeInvalidURL = 1,
+    FooTypeOpenPDF = 2,
+};");
+        Assert.Contains("InvalidUrl = 1,", cs);
+        Assert.Contains("OpenPdf = 2", cs);
+    }
+
+    [Fact]
+    public void ArgumentSemantic_ReadwriteInfersStrong_CopyAlwaysEmitted()
+    {
+        var cs = GenerateBinding(@"
+@interface Foo : NSObject
+@property (nonatomic) NSArray *items;
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, weak) id<NSObject> delegate;
+@property (nonatomic, copy, readonly) NSString *readonlyName;
+@end");
+        // Readwrite object pointer without explicit → Strong
+        Assert.Contains("ArgumentSemantic.Strong", cs);
+        // Readwrite copy → Copy
+        Assert.Contains("ArgumentSemantic.Copy", cs);
+        Assert.Contains("ArgumentSemantic.Weak", cs);
+        // Readonly copy → still emitted
+        Assert.Contains("readonlyName\", ArgumentSemantic.Copy", cs);
     }
 
     #endregion

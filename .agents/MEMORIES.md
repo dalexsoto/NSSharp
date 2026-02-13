@@ -7,7 +7,7 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 ## Build & Test
 
 - **Build**: `dotnet build NSSharp.slnx`
-- **Test**: `dotnet test NSSharp.slnx` (168 tests)
+- **Test**: `dotnet test NSSharp.slnx` (185 tests)
 - **Run from source**: `dotnet run --project src/NSSharp -- [args]`
 - **Install as tool**: `dotnet pack src/NSSharp/NSSharp.csproj -c Release && dotnet tool install -g --add-source src/NSSharp/bin/Release NSSharp`
 - The installed tool may be stale (git version hash unchanged); prefer `dotnet run --project src/NSSharp` during development.
@@ -16,8 +16,11 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 
 ## Type Mapping
 
-- **`NSArray<Type *>`** maps to typed arrays (`Type []`). For non-collection generics like `UIView<Protocol>`, map to `IProtocol`. Collection types (NSDictionary, NSSet, etc.) are excluded from protocol inference.
-  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:197-230`
+- **`NSArray<Type *>`** maps to typed arrays (`Type []`). For non-collection generics like `UIView<Protocol>`, map to `IProtocol`. Collection types (NSDictionary, NSSet, etc.) preserve generics with Foundation types.
+  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:197-245`
+
+- **`NSDictionary<K, V>` and `NSSet<T>`** preserve generic parameters with Foundation types. `NSString *` → `NSString` (not `string`) inside generics because generic constraints require `NSObject` subclasses.
+  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:222-238`
 
 - **Block types** map to `Action` (no comment annotation). The `unsafe` keyword check must strip C-style comments before checking for pointer `*` to avoid false positives from block type annotations like `/* block type */`.
   - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:255`, `CSharpBindingGenerator.cs:795-798`
@@ -25,14 +28,23 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 - **`IBAction`** is a macro for `void` — mapped in the primitive type dictionary.
   - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:34`
 
+- **`IBInspectable` and `IBOutlet`** are IB annotations that must be stripped from types before mapping.
+  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:145-149`
+
 - **`*Block` typedefs** are renamed to `*Handler` (.NET convention). E.g., `PSPDFAnnotationGroupItemConfigurationBlock` → `PSPDFAnnotationGroupItemConfigurationHandler`.
   - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:215-216`
 
 - **`id < Protocol >`** (with spaces) must be handled — the parsed AST often inserts spaces around `<` and `>`. Strip spaces before matching.
   - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:190-195`
 
+- **ObjC direction qualifiers** (`out`, `in`, `inout`, `bycopy`, `byref`, `oneway`) must be stripped from types to avoid double `out` for pointer-to-pointer types.
+  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:138-143`
+
+- **Ownership qualifiers** (`__strong`, `__weak`, `__unsafe_unretained`, `__autoreleasing`) must be stripped alongside nullability annotations.
+  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:330-340`
+
 - **Trailing `const`** must be stripped (e.g., `PSPDFDocumentSharingDestination const`). Both leading and trailing `const` qualifiers need handling.
-  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:142-147`
+  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:152-158`
 
 - **Typedef resolution** chains through aliases with cycle detection. `SetTypedefMap()` / `ResolveTypedef()` in ObjCTypeMapper, `BuildTypedefMap()` in CSharpBindingGenerator.
   - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:8-29`
@@ -41,8 +53,8 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 
 ## Method Naming
 
-- **Sharpie normalizes acronyms** in method names: `URL` → `Url`, `PDF` → `Pdf`, `HUD` → `Hud`, `HTML` → `Html`, `JSON` → `Json`. Our `PascalCase()` includes `NormalizeAcronyms()` to match.
-  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:349-383`
+- **Sharpie normalizes acronyms** in method names: `URL` → `Url`, `PDF` → `Pdf`, `HUD` → `Hud`, `HTML` → `Html`, `JSON` → `Json`, `JWT` → `Jwt`, `ID` → `Id`. Our `PascalCase()` includes `NormalizeAcronyms()` to match. Also normalize parameter names with `NormalizeParamName()`.
+  - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:434-520`
 
 - **Sharpie never emits `[Async]` on protocol methods** — only class/interface methods get `[Async]`.
   - *Source*: `src/NSSharp/Binding/CSharpBindingGenerator.cs:789-791`
@@ -114,7 +126,32 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 
 ---
 
-## Comparison with Sharpie (PSPDFKitUI, ~200 headers)
+## Comparison with Sharpie
+
+### PSPDFKit.xcframework (214 headers, 1583 common exports)
+
+After 5 iterations of comparison and improvement:
+
+| Metric | Count | Result |
+|---|---|---|
+| Common exports | 1583 | — |
+| Exact match | 1278 | **80.7%** |
+| NAME diffs | 120 | Method/property naming |
+| SEMANTIC diffs | 94 | ArgumentSemantic inconsistencies |
+| PARAMS diffs | 220 | Block types, param naming |
+
+**Key iteration learnings:**
+- `PSPDF_EMPTY_INIT_UNAVAILABLE` macros: lexer must whitelist them before the UPPER_SNAKE_CASE heuristic skips them
+- `DisableDefaultCtor`: only emit for explicit init unavailable macros, not inferred from parameterized init presence
+- `UID`/`XMP` must be in the acronym normalization list
+- `Block` → `Action` in method names (word boundary detection)
+- `isEqualTo<ClassName>:` → `IsEqualTo` (strip class name suffix)
+- `To` should NOT be in the preposition stripping list (it's usually semantically meaningful)
+- Static factory methods returning instancetype: `Create<Name>` prefix instead of `Get<Name>`
+- After delegate sender stripping, search verb prefixes in ALL remaining parts (including single part)
+- Sharpie's ApiDefinition.cs may be manually edited — target 80%+ match, not 100%
+
+### PSPDFKitUI (~200 headers, historical)
 
 | Metric | Sharpie | NSSharp | Accuracy |
 |---|---|---|---|
@@ -148,9 +185,9 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 | `src/NSSharp/Ast/` | AST node definitions |
 | `src/NSSharp/Binding/` | C# binding generator + type mapper |
 | `src/NSSharp/Program.cs` | CLI entry point |
-| `src/NSSharp.Tests/` | xUnit tests (168) |
-| `DemoFramework/` | PSPDFKitUI.xcframework + sharpie ApiDefinition.cs for comparison |
-| `.agents/skills/` | 3 Copilot skills for binding generation |
+| `src/NSSharp.Tests/` | xUnit tests (185) |
+| `DemoFramework/` | PSPDFKit.xcframework + sharpie ApiDefinition.cs for comparison |
+| `.agents/skills/` | 4 Copilot skills for binding generation and comparison |
 
 ---
 

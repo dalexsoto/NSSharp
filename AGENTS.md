@@ -10,7 +10,7 @@ NSSharp is a .NET 10 CLI tool (packaged as a `dotnet tool`) that parses Objectiv
 # Build everything
 dotnet build NSSharp.slnx
 
-# Run all tests (168 tests)
+# Run all tests (185 tests)
 dotnet test NSSharp.slnx
 
 # Run the tool during development
@@ -67,7 +67,7 @@ The pipeline is: **Source → Lexer → Tokens → Parser → AST → Serializer
 - **Lexer** (`ObjCLexer`): Tokenizes ObjC source, auto-detects vendor macros via UPPER_SNAKE_CASE heuristic (configurable via `ObjCLexerOptions`), tracks `NS_ASSUME_NONNULL_BEGIN/END` scopes, handles comments and preprocessor directives.
 - **Parser** (`ObjCParser`): Recursive-descent parser producing `ObjCHeader` AST nodes. Handles interfaces, protocols, properties (including block-type properties `void (^name)(params)`), methods, enums (NS_ENUM/NS_OPTIONS/NS_CLOSED_ENUM/NS_ERROR_ENUM/C-style), structs, typedefs, functions, blocks, categories, lightweight generics (including generic superclasses), nullability, extern constants ([Field]). Recognizes `NS_DESIGNATED_INITIALIZER` and `NS_REQUIRES_SUPER` trailing macros. Skips preprocessor directives inside protocol/identifier lists. Handles `SWIFT_EXTENSION(Module)` category names.
 - **JSON serializer**: Uses `System.Text.Json` with camelCase naming.
-- **Binding generator**: Produces Xamarin-style `[BaseType]`, `[Export]`, `[Protocol]`, `[DesignatedInitializer]`, `[Notification]`, `[Async]`, `[Abstract]` attributed C# interfaces. Emits `I`-prefixed protocol stub interfaces. Applies `[Protocol, Model]` to delegate/datasource protocols. `@required` protocol properties get `[Abstract]` and stay as C# properties (with `[Bind]` for custom getters). `@optional` protocol properties are decomposed into getter/setter method pairs. Smart method naming: uses first selector part only, strips trailing prepositions (With/At/For etc.), strips sender prefix for delegate methods, adds `Get` prefix for getter-style parameterized methods (86% name match vs sharpie). Merges ObjC categories into parent classes. Handles `NS_ASSUME_NONNULL` scope-aware nullability, weak→NullAllowed inference, `ArgumentSemantic.Strong` for object pointer properties, `[Field]` for extern constants. Detects completion handler patterns for `[Async]` and `NSNotificationName` for `[Notification]`. Maps ObjC types to C# via `ObjCTypeMapper`.
+- **Binding generator**: Produces Xamarin-style `[BaseType]`, `[Export]`, `[Protocol]`, `[DesignatedInitializer]`, `[DisableDefaultCtor]`, `[Notification]`, `[Async]`, `[Abstract]` attributed C# interfaces. Emits `I`-prefixed protocol stub interfaces. Applies `[Protocol, Model]` to delegate/datasource protocols. `@required` protocol properties get `[Abstract]` with `[NullAllowed, Export]` combined on one line. `@optional` protocol properties are decomposed into getter/setter method pairs. Category properties decomposed into getter/setter methods (no `[Abstract]`). Smart method naming: strips trailing prepositions (With/At/For/Using/By etc.), strips sender prefix for delegate methods, finds verb parts (did/will/should/can) in multi-part delegate selectors, adds `Get` prefix for getter-style methods, `Create` prefix for static factory methods returning instancetype. Renames `Block`→`Action` in method names. Handles `isEqualTo<Class>:` → `IsEqualTo`. Merges ObjC categories into parent classes. Handles `NS_ASSUME_NONNULL` scope-aware nullability, weak→NullAllowed, `out NSError` always NullAllowed. Emits ArgumentSemantic for explicit copy/strong/weak/assign, infers Strong for readwrite object pointers and Assign for readwrite non-primitive value types. `[Field]` for extern constants, `[Notification]` for NSNotificationName. Detects completion handler patterns for `[Async]`. Detects init unavailable macros for `[DisableDefaultCtor]`. Maps ObjC types to C# via `ObjCTypeMapper`. Normalizes acronyms (URL→Url, JWT→Jwt, UID→Uid, XMP→Xmp, ID→Id) in method, property, parameter, and enum member names. Preserves Foundation types in generic params (NSSet<NSString>, NSDictionary<K,V>). Strips ObjC direction qualifiers (out/in/inout), IB annotations, ownership qualifiers (__strong, __weak). Enum prefix stripping with shortened prefix fallback (FooErrorCode values prefixed FooError → stripped). PSPDFKit comparison: 80.7% exact match on 1583 exports (214 headers).
 
 ## Namespaces
 
@@ -149,14 +149,24 @@ Additional csproj CI features:
 - **Default output is C#**: The `--format` option defaults to `csharp`, use `-f json` for JSON.
 - **XCFramework slice selection**: `--slice` picks a specific platform slice, `--list-slices` enumerates them.
 - **Binding output is a starting point**: Generated C# bindings may need manual adjustment (like Objective Sharpie).
-- **Enum prefix stripping**: e.g., `MyStatusOK` → `OK` when the enum is named `MyStatus`.
+- **Enum prefix stripping**: e.g., `MyStatusOK` → `OK` when the enum is named `MyStatus`. Also handles shortened prefixes: `FooErrorCode` values prefixed `FooError` → stripped.
 - **Constructor detection**: Methods starting with `init` become `NativeHandle Constructor(...)`.
 - **[DesignatedInitializer]**: `NS_DESIGNATED_INITIALIZER` trailing macros on init methods emit `[DesignatedInitializer]` in the binding.
-- **Block-type properties**: Properties like `void (^name)(params)` are correctly parsed with the block name extracted from the caret syntax.
+- **[DisableDefaultCtor]**: Emitted only when init is explicitly marked unavailable via macros (e.g., `PSPDF_EMPTY_INIT_UNAVAILABLE`, `NS_INIT_UNAVAILABLE`). Not inferred from parameterized init presence.
+- **Init unavailable macro detection**: The lexer whitelists macros containing `INIT_UNAVAILABLE` or `EMPTY_INIT`, preserving them as identifiers instead of skipping them via the macro heuristic, so the parser can detect them and set `IsInitUnavailable`.
+- **Static factory method naming**: Static methods returning `instancetype` use `From<Param>` when the selector matches the class name pattern (e.g., `presetWithColor:` on `PSPDFColorPreset` → `FromColor`), or `Create<Name>` for other factory methods (e.g., `encryptedLibraryWithPath:` → `CreateEncryptedLibrary`).
+- **Block→Action renaming**: Method names containing `Block` as a word boundary are renamed to `Action` (e.g., `performBlock:` → `PerformAction`, `performBlockForReading:` → `PerformActionForReading`).
+- **isEqualTo pattern**: `isEqualTo<ClassName>:` selectors are simplified to `IsEqualTo` (class name suffix stripped).
+- **Acronym normalization**: URL→Url, PDF→Pdf, JWT→Jwt, UID→Uid, XMP→Xmp, ID→Id in method names, property names, parameter names, and enum member names.
 - **NS_REQUIRES_SUPER**: Consumed without corrupting selectors (not currently emitted as an attribute).
+- **NS_ERROR_ENUM**: Parsed with implicit NSInteger backing type (first param is error domain, not backing type).
 - **[Field] for extern constants**: Extern constants (no parameters) always emit `[Field]` attributes in a Constants interface. Functions with parameters emit `[DllImport]` in a CFunctions static class only when `--emit-c-bindings` is passed.
 - **Weak → NullAllowed**: Properties declared `weak` are implicitly nullable and always get `[NullAllowed]`.
-- **Default ArgumentSemantic.Retain**: Object pointer properties without explicit copy/assign/weak semantics get `ArgumentSemantic.Retain`.
+- **out NSError → NullAllowed**: All `out NSError` parameters always get `[NullAllowed]`, matching sharpie convention.
+- **ArgumentSemantic**: Only emitted when explicitly declared in property attributes (copy, strong, retain, weak, assign) or inferred for readwrite object pointers (Strong) and non-primitive value types (Assign). Readonly properties without explicit semantic get no inference.
+- **Acronym normalization**: URL→Url, PDF→Pdf, JWT→Jwt, UID→Uid, XMP→Xmp, ID→Id in method names, property names, parameter names, and enum member names.
+- **Category property decomposition**: Category properties are decomposed into getter/setter methods (like protocol optional properties) but without `[Abstract]`.
+- **Typedef inside protocols**: `typedef NS_OPTIONS(...)` declared inside `@protocol` bodies are parsed and added to the header's enum list.
 
 ## Adding New ObjC Constructs
 
