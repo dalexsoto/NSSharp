@@ -14,7 +14,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <PackageId>NSSharp</PackageId>
+    <PackageId>ASTools.NSSharp</PackageId>
     <Title>NSSharp - Objective-C Header Parser &amp; C# Binding Generator</Title>
     <Description>A .NET CLI tool that parses Objective-C headers and generates C# binding definitions (Xamarin.iOS / .NET for iOS style) or structured JSON output. No libclang required.</Description>
     <Authors>dalexsoto</Authors>
