@@ -15,7 +15,9 @@ dotnet build NSSharp.slnx
 
 # Or install as a dotnet tool
 dotnet pack src/NSSharp/NSSharp.csproj -c Release
-dotnet tool install -g --add-source src/NSSharp/bin/Release NSSharp
+dotnet tool install -g --add-source src/NSSharp/bin/Release ASTools.NSSharp
+# Or from NuGet.org
+dotnet tool install -g ASTools.NSSharp
 
 # Parse a header to C# bindings (default) — via dotnet run or installed tool
 dotnet run --project src/NSSharp -- MyHeader.h

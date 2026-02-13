@@ -20,13 +20,13 @@ dotnet run --project src/NSSharp -- <args>
 dotnet pack src/NSSharp/NSSharp.csproj -c Release
 
 # Install globally from local package
-dotnet tool install -g --add-source src/NSSharp/bin/Release NSSharp
+dotnet tool install -g --add-source src/NSSharp/bin/Release ASTools.NSSharp
 
 # Run as installed tool
 nssharp MyHeader.h
 
 # Uninstall
-dotnet tool uninstall -g NSSharp
+dotnet tool uninstall -g ASTools.NSSharp
 ```
 
 Always build from the repo root using `NSSharp.slnx`. Requires .NET 10 SDK (pinned via `global.json`).
@@ -109,8 +109,9 @@ NSSharp is packaged as a [dotnet tool](https://learn.microsoft.com/en-us/dotnet/
 - `PackAsTool=true` — enables tool packaging
 - `ToolCommandName=nssharp` — the CLI command name
 - `RollForward=Major` — runs on newer .NET runtimes
-- `PackageId=NSSharp` — NuGet package ID
+- `PackageId=ASTools.NSSharp` — NuGet package ID
 - `PackageReadmeFile=README.md` — bundled in the .nupkg
+- NuGet package: https://www.nuget.org/packages/ASTools.NSSharp/
 
 The `global.json` pins the SDK to `net10.0` with `latestMinor` rollforward.
 

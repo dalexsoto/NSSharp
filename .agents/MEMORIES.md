@@ -9,7 +9,8 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 - **Build**: `dotnet build NSSharp.slnx`
 - **Test**: `dotnet test NSSharp.slnx` (189 tests)
 - **Run from source**: `dotnet run --project src/NSSharp -- [args]`
-- **Install as tool**: `dotnet pack src/NSSharp/NSSharp.csproj -c Release && dotnet tool install -g --add-source src/NSSharp/bin/Release NSSharp`
+- **Install as tool**: `dotnet pack src/NSSharp/NSSharp.csproj -c Release && dotnet tool install -g --add-source src/NSSharp/bin/Release ASTools.NSSharp`
+- **NuGet package**: `https://www.nuget.org/packages/ASTools.NSSharp/` (install with `dotnet tool install --global ASTools.NSSharp`)
 - The installed tool may be stale (git version hash unchanged); prefer `dotnet run --project src/NSSharp` during development.
 
 ---

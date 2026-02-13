@@ -1,5 +1,7 @@
 # NSSharp
 
+[![NuGet](https://img.shields.io/nuget/v/ASTools.NSSharp.svg)](https://www.nuget.org/packages/ASTools.NSSharp/)
+
 A .NET 10 command-line tool that parses Objective-C header files and produces either a **JSON representation** of the API surface or **C# binding definitions** compatible with Xamarin.iOS / .NET for iOS.
 
 Built as a self-contained C# parser — no libclang or native dependencies required.
@@ -332,10 +334,13 @@ The tool:
 dotnet pack src/NSSharp/NSSharp.csproj -c Release
 
 # Install globally from local package
-dotnet tool install --global --add-source src/NSSharp/bin/Release NSSharp
+dotnet tool install --global --add-source src/NSSharp/bin/Release ASTools.NSSharp
 
-# Or install from NuGet (once published)
-dotnet tool install --global NSSharp
+# Or install from NuGet.org
+dotnet tool install --global ASTools.NSSharp
+
+# NuGet package
+# https://www.nuget.org/packages/ASTools.NSSharp/
 
 # Use
 nssharp MyHeader.h
@@ -344,7 +349,7 @@ nssharp --xcframework MyLib.xcframework -o Bindings.cs
 nssharp MyHeader.h -f json -o output.json
 
 # Uninstall
-dotnet tool uninstall --global NSSharp
+dotnet tool uninstall --global ASTools.NSSharp
 ```
 
 ## Versioning & CI
