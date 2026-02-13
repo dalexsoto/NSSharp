@@ -11,6 +11,7 @@ Built as a self-contained C# parser — no libclang or native dependencies requi
 - **NS_ASSUME_NONNULL scope tracking** — accurately infers `[NullAllowed]` based on nonnull scope
 - **JSON output** — structured JSON representation of all API constructs
 - **C# binding generation** — produces Xamarin/MAUI-style `[Export]`/`[BaseType]` binding definitions
+- **Sharpie parity benchmark** — 88.9% exact export match vs Objective Sharpie on PSPDFKitUI.xcframework (550 common exports in current DemoFramework dataset)
 - **Category merging** — ObjC categories are merged into parent class interfaces (including `SWIFT_EXTENSION` categories)
 - **XCFramework support** — discovers and parses all headers inside `.xcframework` bundles
 - **Comprehensive construct support**:
@@ -428,7 +429,7 @@ NSSharp/
 dotnet test
 ```
 
-185 tests covering:
+189 tests covering:
 - **Lexer**: tokenization, comment skipping, macro heuristic, UPPER_SNAKE_CASE detection, number literals
 - **Parser**: all ObjC constructs (interfaces, protocols, properties, methods, enums, structs, typedefs, functions, blocks, categories, generics, generic superclasses, forward declarations, NS_ASSUME_NONNULL scoping)
 - **JSON serializer**: schema correctness, camelCase, compact mode

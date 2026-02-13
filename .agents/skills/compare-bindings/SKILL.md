@@ -102,7 +102,7 @@ def get_export_to_name(text):
     return results
 ```
 
-**Target: ≥89% match rate.** Common diff categories:
+**Target:** prioritize upward trend; current DemoFramework baseline is **88.9% exact match** (489/550 common exports on PSPDFKitUI). Common diff categories:
 - Parse errors (one side has `}` as name) — protocol property style differences
 - Extra/missing `Get` prefix
 - Casing differences (sharpie quirks like `handleExternalUrl`)
@@ -163,12 +163,12 @@ def extract_params(decl):
 | `[Async]` | 100-160% | We detect more completion handlers than sharpie |
 | `[Protocol]` | ~61% | NOT a real gap — sharpie double-counts with `#if NET` |
 
-### Known unfixable gaps (PSPDFKitUI)
+### Known hard gaps (PSPDFKit / PSPDFKitUI)
 
-- **35 missing exports**: API version differences (17), builder pattern inheritance (4), EventArgs (3), UINavigationItem overrides (2), cross-framework (9)
-- **`[Wrap]` (29)**: Requires enum constant mapping knowledge
-- **`new` modifier (12)**: Requires class hierarchy analysis
-- **Cross-framework typedefs (22)**: Would need all framework headers
+- Cross-framework typedefs and inherited APIs need headers from related frameworks
+- `new` modifier parity requires class hierarchy analysis
+- `[Wrap]` / `[BindAs]` style conveniences are sharpie/manual patterns, not header-only
+- Block signature parity (`Action` vs typed delegates) needs richer block type inference
 
 ### What to investigate
 

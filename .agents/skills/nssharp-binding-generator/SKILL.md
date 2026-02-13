@@ -174,6 +174,7 @@ CSharpBindingGenerator.MergeCategories(headers);
 - Static factory methods returning `instancetype` get `Create<Name>` prefix instead of `Get<Name>`
 - `Block` in method names is renamed to `Action` at word boundaries (e.g., `performBlock:` → `PerformAction`)
 - `isEqualTo<ClassName>:` selectors are simplified to `IsEqualTo` (class name suffix stripped)
+- Selector naming special-cases: collapse trailing `ForPageAtIndex` / `OnPageAtIndex`; preserve `InContext`, `WithTransform`, and `ForEvent`
 - Weak properties always get `[NullAllowed]`
 - Inside `NS_ASSUME_NONNULL` scope: only explicitly nullable types get `[NullAllowed]`; outside scope: all object pointers get `[NullAllowed]`
 - ObjC categories are merged into parent class interfaces when the parent is available (including `SWIFT_EXTENSION` categories)
@@ -188,3 +189,4 @@ CSharpBindingGenerator.MergeCategories(headers);
 - Typedef aliases are resolved to their base types for correct C# type mapping
 - Both leading and trailing `const` qualifiers are stripped during type mapping
 - Preprocessor directives (`#if`, `#endif`) inside protocol conformance lists are skipped
+- PSPDFKitUI benchmark (current DemoFramework): 88.9% exact export parity vs sharpie (489/550 common exports)

@@ -915,12 +915,21 @@ public sealed class CSharpBindingGenerator
             && !IsVerbPrefixedName(csMethodName)
             && !method.Selector.StartsWith("init", StringComparison.Ordinal)
             && (method.Parameters.Count > 0 || (isProtocolMethod && method.Parameters.Count == 0));
+        bool needsStaticHandlerGetPrefix = isStatic
+            && method.Parameters.Count == 0
+            && csReturnType != "void"
+            && csMethodName.EndsWith("Handler", StringComparison.Ordinal)
+            && !csMethodName.StartsWith("Get", StringComparison.Ordinal);
         if (needsGetPrefix)
         {
             if (isStatic && method.ReturnType.Contains("instancetype"))
                 csMethodName = "Create" + csMethodName;
             else
                 csMethodName = "Get" + csMethodName;
+        }
+        else if (needsStaticHandlerGetPrefix)
+        {
+            csMethodName = "Get" + csMethodName;
         }
 
         // NullAllowed on return

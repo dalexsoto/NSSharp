@@ -809,38 +809,37 @@ Without this fix, the entire `PSPDFAnnotationStateManager` class was lost due to
 
 ## Comparison with Objective Sharpie
 
-### PSPDFKit.xcframework (current test target)
+### PSPDFKitUI.xcframework (current DemoFramework target)
 
-Tested against sharpie's output for PSPDFKit.xcframework (214 headers, 1583 common exports across 218 common interfaces). After 5 iterations of comparison and improvement:
+Tested against sharpie's output for PSPDFKitUI.xcframework in `DemoFramework` (67 common interfaces, 550 common exports):
 
 | Metric | Count | Accuracy |
 |---|---|---|
-| Common exports | 1583 | — |
-| Exact match | 1278 | **80.7%** |
-| With diffs | 305 | 19.3% |
+| Common exports | 550 | — |
+| Exact match | 489 | **88.9%** |
+| With diffs | 61 | 11.1% |
 
 Diff categories (remaining):
 
 | Category | Count | Notes |
 |---|---|---|
-| NAME | 120 | Method/property naming differences |
-| SEMANTIC | 94 | ArgumentSemantic inconsistencies (sharpie may be manually edited) |
-| PARAMS | 220 | Block types (Action vs typed delegates), param naming |
-| RETURN_TYPE | 41 | `new` keyword, generic collection types |
-| PROP_TYPE | 37 | Block handler types, NSString vs string |
-| MISSING_EXPORT | 30 | Configuration builder patterns, cross-framework |
-| EXTRA_EXPORT | 50 | NSSharp emits methods sharpie doesn't |
-| NULLALLOWED | 24 | Scope inconsistencies |
-| ASYNC | 17 | Detection differences |
-| ACCESSORS | 15 | Getter/setter differences |
+| NAME | 18 | Mostly getter-prefix and weak-property naming conventions |
+| SEMANTIC | 64 | ArgumentSemantic differences in sharpie/manual curation |
+| PARAMS | 45 | Block signatures and naming |
+| RETURN_TYPE | 3 | Limited type mismatches |
+| PROP_TYPE | 23 | Handler/block and collection type differences |
+| MISSING_EXPORT | 1319 | Structural/reference-scope mismatch with sharpie ApiDefinition |
+| EXTRA_EXPORT | 18 | NSSharp emits methods sharpie does not |
+| NULLALLOWED | 8 | Nullability annotation differences |
+| ASYNC | 5 | Completion-handler detection differences |
+| ACCESSORS | 3 | Getter/setter decomposition differences |
 
-**Progress through iterations:**
-- Baseline: 76.4% (1209/1583)
-- After iteration 1 (semantic, verb prefixes, protocol naming): ~78%
-- After iteration 2 (factory From naming, bool return): 79.5%
-- After iteration 3 (verb word boundary, protocol property verb): 79.7%
-- After iteration 4 (DisableDefaultCtor, init unavailable macros): 79.7%
-- After iteration 5 (UID/XMP acronyms, Block→Action, isEqualTo, Create prefix): **80.7%**
+Recent improvements that moved this benchmark:
+- Action-selector guard to avoid false sender stripping (e.g., `presentViewController:`)
+- Context preservation rules in selector naming (`InContext`, `WithTransform`, page-index patterns)
+- Single-part `*Block` selector naming to `*Handler`
+- Static zero-parameter handler getters now prefixed with `Get`
+- Leading underscore trimming in PascalCase conversion
 
 ### Instant.xcframework (historical test target)
 

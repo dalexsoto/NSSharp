@@ -768,6 +768,32 @@ NS_ASSUME_NONNULL_END");
     }
 
     [Fact]
+    public void SelectorNaming_CollapsesPageIndexContext()
+    {
+        var name = ObjCTypeMapper.SelectorToMethodName("annotationsForPageAtIndex:type:");
+        Assert.Equal("Annotations", name);
+    }
+
+    [Fact]
+    public void SelectorNaming_PreservesSemanticContext()
+    {
+        Assert.Equal("DrawInContext", ObjCTypeMapper.SelectorToMethodName("drawInContext:options:"));
+        Assert.Equal("UpdatePropertiesWithTransform", ObjCTypeMapper.SelectorToMethodName("updatePropertiesWithTransform:isSizeChange:meanScale:"));
+    }
+
+    [Fact]
+    public void SelectorNaming_SinglePartBlockUsesHandlerSuffix()
+    {
+        Assert.Equal("FreeTextConfigurationHandler", ObjCTypeMapper.SelectorToMethodName("freeTextConfigurationBlock"));
+    }
+
+    [Fact]
+    public void PascalCase_StripsLeadingUnderscore()
+    {
+        Assert.Equal("AvailableControllerOptions", ObjCTypeMapper.PascalCase("_availableControllerOptions"));
+    }
+
+    [Fact]
     public void TypedefEnumInsideProtocol_IsParsed()
     {
         var source = @"

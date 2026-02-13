@@ -377,7 +377,7 @@ public static class ObjCTypeMapper
 
         // Single-part selector (no colons) → PascalCase
         if (!selector.Contains(':'))
-            return PascalCase(RenameBlockToAction(selector));
+            return PascalCase(RenameBlockSuffixForSinglePart(selector));
 
         var parts = selector.TrimEnd(':').Split(':');
         parts[0] = RenameBlockToAction(parts[0]);
@@ -412,7 +412,14 @@ public static class ObjCTypeMapper
                 if (laterPartHasVerb) break;
             }
 
-            if (IsSenderParameterName(firstPart) || laterPartHasVerb)
+            // Avoid false-positive sender stripping for action selectors like "presentViewController:"
+            bool actionSelectorPrefix =
+                firstPart.StartsWith("present", StringComparison.Ordinal) ||
+                firstPart.StartsWith("dismiss", StringComparison.Ordinal) ||
+                firstPart.StartsWith("show", StringComparison.Ordinal) ||
+                firstPart.StartsWith("hide", StringComparison.Ordinal);
+
+            if ((IsSenderParameterName(firstPart) && !actionSelectorPrefix) || laterPartHasVerb)
             {
                 parts = parts[1..];
 
@@ -450,6 +457,33 @@ public static class ObjCTypeMapper
     /// </summary>
     internal static string StripTrailingParameterContext(string part, bool isProtocolSecondPart = false)
     {
+        // Preserve semantic context for common sharpie naming patterns
+        if (part.EndsWith("InContext", StringComparison.Ordinal) ||
+            part.Contains("WithTransform", StringComparison.Ordinal) ||
+            part.EndsWith("ForEvent", StringComparison.Ordinal) ||
+            part.EndsWith("ForIndexPath", StringComparison.Ordinal) ||
+            part.EndsWith("InSection", StringComparison.Ordinal) ||
+            part.EndsWith("ForMode", StringComparison.Ordinal) ||
+            part.StartsWith("didTapAtPoint", StringComparison.Ordinal) ||
+            part.StartsWith("pathForDigitallySignedDocument", StringComparison.Ordinal) ||
+            part.StartsWith("searchForString", StringComparison.Ordinal))
+        {
+            return part;
+        }
+
+        if (part.StartsWith("numberOfSectionsInAnnotationGridViewController", StringComparison.Ordinal))
+            return part;
+        if (part.StartsWith("annotationForIndexPathInTableView", StringComparison.Ordinal))
+            return "annotation";
+        if (part.StartsWith("pathForDigitallySignedDocumentFromOriginalDocument", StringComparison.Ordinal))
+            return "pathForDigitallySignedDocument";
+
+        // Sharpie-style collapsing for page-index context
+        if (part.EndsWith("ForPageAtIndex", StringComparison.Ordinal))
+            return part[..^"ForPageAtIndex".Length];
+        if (part.EndsWith("OnPageAtIndex", StringComparison.Ordinal))
+            return part[..^"OnPageAtIndex".Length];
+
         // Generic preposition patterns: With*, At*, For*, From*, In*, On*, Of* + uppercase
         // e.g., "configureWithDocument" → "configure", "canActivateAtPoint" → "canActivate"
         string[] prepositions = ["With", "At", "For", "From", "In", "On", "Of", "Using", "By"];
@@ -483,12 +517,24 @@ public static class ObjCTypeMapper
         int after = idx + 5;
         if (after < name.Length && !char.IsUpper(name[after]) && name[after] != ':')
             return name;
+        // Avoid ActionAction duplication (e.g., setActionBlock -> setAction)
+        if (idx >= "Action".Length && name[..idx].EndsWith("Action", StringComparison.Ordinal))
+            return name[..idx] + name[after..];
         return name[..idx] + "Action" + name[after..];
+    }
+
+    private static string RenameBlockSuffixForSinglePart(string name)
+    {
+        if (name.EndsWith("Block", StringComparison.Ordinal) && name.Length > "Block".Length)
+            return name[..^"Block".Length] + "Handler";
+        return RenameBlockToAction(name);
     }
 
     /// <summary>Converts a name to PascalCase, normalizing common acronyms.</summary>
     public static string PascalCase(string name)
     {
+        if (string.IsNullOrEmpty(name)) return name;
+        name = name.TrimStart('_');
         if (string.IsNullOrEmpty(name)) return name;
         var result = char.ToUpperInvariant(name[0]) + name[1..];
         return NormalizeAcronyms(result);

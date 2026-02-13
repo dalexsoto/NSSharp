@@ -7,7 +7,7 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 ## Build & Test
 
 - **Build**: `dotnet build NSSharp.slnx`
-- **Test**: `dotnet test NSSharp.slnx` (185 tests)
+- **Test**: `dotnet test NSSharp.slnx` (189 tests)
 - **Run from source**: `dotnet run --project src/NSSharp -- [args]`
 - **Install as tool**: `dotnet pack src/NSSharp/NSSharp.csproj -c Release && dotnet tool install -g --add-source src/NSSharp/bin/Release NSSharp`
 - The installed tool may be stale (git version hash unchanged); prefer `dotnet run --project src/NSSharp` during development.
@@ -65,7 +65,7 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 - **Multi-part protocol selectors**: strip the first part if it looks like a sender parameter (ends in Controller/View/Manager/Bar/Cell/Picker/Inspector/Toolbar/Button/Item/Store/Search/HUD/Scrubber/Presenter/Container/Coordinator).
   - *Source*: `src/NSSharp/Binding/ObjCTypeMapper.cs:370-395`
 
-- **Preposition stripping** only strips trailing `Animated` suffix from the first selector part. Generic preposition stripping (`With`/`At`/`For`/`From`/`In`/`On`/`Of`) was removed — it hurt more cases than it helped (15 hurt vs 2 helped in PSPDFKitUI comparison).
+- **Preposition/context stripping** keeps targeted rules: preserve semantic contexts (`InContext`, `WithTransform`, `ForEvent`), collapse page-index contexts (`ForPageAtIndex`, `OnPageAtIndex`), and keep specific sharpie-aligned suffixes (`ForIndexPath`, `InSection`) where needed.
 
 - **Get prefix** is added for non-void methods with parameters that don't start with a verb. The verb list includes ~80 verbs (Add, Remove, Get, Set, Did, Will, Should, Can, Is, Has, Show, Hide, Present, Dismiss, etc.).
   - *Source*: `src/NSSharp/Binding/CSharpBindingGenerator.cs:708-745`
@@ -128,28 +128,31 @@ Accumulated learnings and conventions discovered while building NSSharp — an O
 
 ## Comparison with Sharpie
 
-### PSPDFKit.xcframework (214 headers, 1583 common exports)
+### PSPDFKitUI.xcframework (current DemoFramework target)
 
-After 5 iterations of comparison and improvement:
+Latest comparison/improvement cycle:
 
 | Metric | Count | Result |
 |---|---|---|
-| Common exports | 1583 | — |
-| Exact match | 1278 | **80.7%** |
-| NAME diffs | 120 | Method/property naming |
-| SEMANTIC diffs | 94 | ArgumentSemantic inconsistencies |
-| PARAMS diffs | 220 | Block types, param naming |
+| Common exports | 550 | — |
+| Exact match | 489 | **88.9%** |
+| NAME diffs | 18 | Method/property naming |
+| SEMANTIC diffs | 64 | ArgumentSemantic inconsistencies |
+| PARAMS diffs | 45 | Block types, param naming |
 
 **Key iteration learnings:**
 - `PSPDF_EMPTY_INIT_UNAVAILABLE` macros: lexer must whitelist them before the UPPER_SNAKE_CASE heuristic skips them
 - `DisableDefaultCtor`: only emit for explicit init unavailable macros, not inferred from parameterized init presence
 - `UID`/`XMP` must be in the acronym normalization list
-- `Block` → `Action` in method names (word boundary detection)
+- `Block` naming split: multi-part methods use `Action`, single-part `*Block` selectors use `*Handler`
 - `isEqualTo<ClassName>:` → `IsEqualTo` (strip class name suffix)
 - `To` should NOT be in the preposition stripping list (it's usually semantically meaningful)
 - Static factory methods returning instancetype: `Create<Name>` prefix instead of `Get<Name>`
-- After delegate sender stripping, search verb prefixes in ALL remaining parts (including single part)
-- Sharpie's ApiDefinition.cs may be manually edited — target 80%+ match, not 100%
+- Static zero-parameter handler-returning methods get `Get` prefix for sharpie parity
+- Action selectors (e.g., `presentViewController:`) must not be misclassified as sender prefixes in protocol method naming
+- For selector naming parity with sharpie, collapse trailing page-index context (`ForPageAtIndex` / `OnPageAtIndex`) and preserve semantic context for `InContext`, `WithTransform`, and `ForEvent`.
+- Trim leading underscores in PascalCase conversion (`_foo` → `Foo`) to avoid sharpie naming diffs.
+- Sharpie's ApiDefinition.cs may be manually edited — target trend improvements, not perfect equality.
 
 ### PSPDFKitUI (~200 headers, historical)
 
@@ -185,8 +188,8 @@ After 5 iterations of comparison and improvement:
 | `src/NSSharp/Ast/` | AST node definitions |
 | `src/NSSharp/Binding/` | C# binding generator + type mapper |
 | `src/NSSharp/Program.cs` | CLI entry point |
-| `src/NSSharp.Tests/` | xUnit tests (185) |
-| `DemoFramework/` | PSPDFKit.xcframework + sharpie ApiDefinition.cs for comparison |
+| `src/NSSharp.Tests/` | xUnit tests (189) |
+| `DemoFramework/` | PSPDFKitUI.xcframework + sharpie ApiDefinition.cs for comparison |
 | `.agents/skills/` | 4 Copilot skills for binding generation and comparison |
 
 ---
