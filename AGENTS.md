@@ -148,6 +148,8 @@ Additional csproj CI features:
 - **Protocol stub interfaces**: Each `@protocol Foo` emits `interface IFoo {}` before the protocol definition, enabling typed protocol references in bindings.
 - **[Protocol, Model] for delegates**: Protocols ending in `Delegate` or `DataSource` automatically get `[Protocol, Model]` + `[BaseType(typeof(NSObject))]`, enabling the event pattern.
 - **Default output is C#**: The `--format` option defaults to `csharp`, use `-f json` for JSON.
+- **Split output mode**: `--split-by-header` writes one generated `.cs` file per parsed header (requires `--output` directory). Without it, C# output is a single combined file.
+- **Namespace mode**: `--namespace` applies a namespace wrapper to generated C# output. When omitted and `--xcframework` is used, namespace defaults to the xcframework name; single-header generation stays without namespace by default.
 - **XCFramework slice selection**: `--slice` picks a specific platform slice, `--list-slices` enumerates them.
 - **Binding output is a starting point**: Generated C# bindings may need manual adjustment (like Objective Sharpie).
 - **Enum prefix stripping**: e.g., `MyStatusOK` → `OK` when the enum is named `MyStatus`. Also handles shortened prefixes: `FooErrorCode` values prefixed `FooError` → stripped.

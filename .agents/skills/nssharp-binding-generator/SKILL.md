@@ -32,6 +32,12 @@ nssharp --xcframework MyLib.xcframework -o Bindings.cs
 # Specific slice
 nssharp --xcframework MyLib.xcframework --slice ios-arm64 -o Bindings.cs
 
+# One .cs file per header (requires output directory)
+nssharp --xcframework MyLib.xcframework --split-by-header -o GeneratedBindings/
+
+# Add namespace
+nssharp --xcframework MyLib.xcframework --namespace MyCompany.Bindings -o Bindings.cs
+
 # With vendor export macros
 nssharp --xcframework MyLib.xcframework --extern-macros PSPDF_EXPORT -o Bindings.cs
 
@@ -161,6 +167,7 @@ CSharpBindingGenerator.MergeCategories(headers);
 ## Notes
 
 - Generated bindings are a starting point; manual review may be needed
+- Namespace behavior: single-header input has no namespace by default; xcframework input defaults namespace to the xcframework name unless `--namespace` is specified
 - Enum prefix stripping: `MyStatusOK` → `OK` when enum is `MyStatus`
 - Constructor detection: methods with `init` prefix returning `instancetype` (including `nonnull instancetype`) become `NativeHandle Constructor(...)`
 - `NS_DESIGNATED_INITIALIZER` emits `[DesignatedInitializer]` attribute
