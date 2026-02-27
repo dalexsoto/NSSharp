@@ -29,7 +29,7 @@ var listSlicesOpt = new Option<bool>("--list-slices")
 
 var outputOpt = new Option<FileInfo?>("--output", "-o")
 {
-    Description = "Write output to a file instead of stdout.",
+    Description = "Write output to a file instead of stdout (or a directory when --split-by-header is used).",
 };
 
 var compactOpt = new Option<bool>("--compact")
@@ -59,6 +59,16 @@ var emitCBindingsOpt = new Option<bool>("--emit-c-bindings")
     Description = "Include C function declarations ([DllImport]) in C# binding output. Extern constants ([Field]) are always included.",
 };
 
+var splitByHeaderOpt = new Option<bool>("--split-by-header")
+{
+    Description = "For C# format, write one .cs file per input header (requires --output directory).",
+};
+
+var namespaceOpt = new Option<string?>("--namespace")
+{
+    Description = "Namespace for generated C# output. Defaults to xcframework name when --xcframework is used.",
+};
+
 var rootCommand = new RootCommand("NSSharp — Objective-C header parser and C# binding generator");
 rootCommand.Arguments.Add(filesArg);
 rootCommand.Options.Add(xcframeworkOpt);
@@ -70,6 +80,8 @@ rootCommand.Options.Add(formatOpt);
 rootCommand.Options.Add(externMacrosOpt);
 rootCommand.Options.Add(noMacroHeuristicOpt);
 rootCommand.Options.Add(emitCBindingsOpt);
+rootCommand.Options.Add(splitByHeaderOpt);
+rootCommand.Options.Add(namespaceOpt);
 
 rootCommand.SetAction(async (parseResult, cancellationToken) =>
 {
@@ -83,6 +95,8 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
     var externMacros = parseResult.GetValue(externMacrosOpt) ?? [];
     var noMacroHeuristic = parseResult.GetValue(noMacroHeuristicOpt);
     var emitCBindings = parseResult.GetValue(emitCBindingsOpt);
+    var splitByHeader = parseResult.GetValue(splitByHeaderOpt);
+    var csharpNamespace = parseResult.GetValue(namespaceOpt);
 
     var lexerOptions = new ObjCLexerOptions
     {
@@ -158,6 +172,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
     }
 
     var headers = new List<ObjCHeader>();
+    var parsedSourcePaths = new List<string>();
     foreach (var path in headerPaths)
     {
         try
@@ -168,6 +183,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
             var parser = new ObjCParser(tokens);
             var header = parser.Parse(Path.GetFileName(path));
             headers.Add(header);
+            parsedSourcePaths.Add(path);
         }
         catch (Exception ex)
         {
@@ -186,17 +202,88 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         CSharpBindingGenerator.BuildTypedefMap(headers);
 
         var generator = new CSharpBindingGenerator();
+        var effectiveNamespace = ResolveNamespace(csharpNamespace, xcframework);
+
+        if (splitByHeader)
+        {
+            if (output == null)
+            {
+                Console.Error.WriteLine("--split-by-header requires --output to be a directory path.");
+                Environment.ExitCode = 1;
+                return;
+            }
+
+            var outputDir = output.FullName;
+            if (File.Exists(outputDir))
+            {
+                Console.Error.WriteLine($"--split-by-header requires --output to be a directory, but found file: {outputDir}");
+                Environment.ExitCode = 1;
+                return;
+            }
+            if (Path.HasExtension(outputDir) && !Directory.Exists(outputDir))
+            {
+                Console.Error.WriteLine($"--split-by-header requires --output to be a directory path: {outputDir}");
+                Environment.ExitCode = 1;
+                return;
+            }
+
+            Directory.CreateDirectory(outputDir);
+
+            var nameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < headers.Count; i++)
+            {
+                var header = headers[i];
+                var sourcePath = parsedSourcePaths[i];
+                var baseName = SanitizeFileName(Path.GetFileNameWithoutExtension(sourcePath));
+                if (string.IsNullOrWhiteSpace(baseName))
+                    baseName = $"Header{i + 1}";
+
+                if (nameCounts.TryGetValue(baseName, out var count))
+                {
+                    count++;
+                    nameCounts[baseName] = count;
+                    baseName = $"{baseName}_{count}";
+                }
+                else
+                {
+                    nameCounts[baseName] = 1;
+                }
+
+                var outPath = Path.Combine(outputDir, baseName + ".cs");
+                var content = generator.Generate(header, emitCBindings);
+                content = WrapInNamespace(content, effectiveNamespace);
+                await File.WriteAllTextAsync(outPath, content, cancellationToken);
+                Console.Error.WriteLine($"Written to {outPath}");
+            }
+
+            return;
+        }
+
         var sb = new System.Text.StringBuilder();
         foreach (var header in headers)
         {
             if (sb.Length > 0) sb.AppendLine();
             sb.AppendLine($"// ========== {header.File} ==========");
-            sb.AppendLine(generator.Generate(header, emitCBindings));
+            var content = generator.Generate(header, emitCBindings);
+            sb.AppendLine(WrapInNamespace(content, effectiveNamespace));
         }
         result = sb.ToString().TrimEnd();
     }
     else
     {
+        if (splitByHeader)
+        {
+            Console.Error.WriteLine("--split-by-header is only supported with --format csharp.");
+            Environment.ExitCode = 1;
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(csharpNamespace))
+        {
+            Console.Error.WriteLine("--namespace is only supported with --format csharp.");
+            Environment.ExitCode = 1;
+            return;
+        }
+
         bool pretty = !compact;
         result = headers.Count == 1
             ? ObjCJsonSerializer.Serialize(headers[0], pretty)
@@ -216,3 +303,70 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
 
 var config = new CommandLineConfiguration(rootCommand);
 return await config.InvokeAsync(args);
+
+static string SanitizeFileName(string name)
+{
+    if (string.IsNullOrEmpty(name))
+        return string.Empty;
+
+    var invalid = Path.GetInvalidFileNameChars();
+    var chars = name.Select(c => invalid.Contains(c) ? '_' : c).ToArray();
+    return new string(chars);
+}
+
+static string? ResolveNamespace(string? explicitNamespace, DirectoryInfo? xcframework)
+{
+    if (!string.IsNullOrWhiteSpace(explicitNamespace))
+        return SanitizeNamespace(explicitNamespace);
+
+    if (xcframework != null)
+        return SanitizeNamespace(Path.GetFileNameWithoutExtension(xcframework.Name));
+
+    return null;
+}
+
+static string WrapInNamespace(string content, string? namespaceName)
+{
+    if (string.IsNullOrWhiteSpace(namespaceName))
+        return content.TrimEnd();
+
+    var ns = SanitizeNamespace(namespaceName);
+    if (string.IsNullOrWhiteSpace(ns))
+        return content.TrimEnd();
+
+    var normalized = content.Replace("\r\n", "\n");
+    var lines = normalized.Split('\n');
+    var sb = new System.Text.StringBuilder();
+    sb.AppendLine($"namespace {ns}");
+    sb.AppendLine("{");
+    foreach (var line in lines)
+    {
+        if (line.Length == 0)
+            sb.AppendLine();
+        else
+            sb.Append("    ").AppendLine(line);
+    }
+    sb.AppendLine("}");
+    return sb.ToString().TrimEnd();
+}
+
+static string SanitizeNamespace(string value)
+{
+    var segments = value.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var sanitized = new List<string>();
+    foreach (var seg in segments)
+    {
+        if (string.IsNullOrWhiteSpace(seg))
+            continue;
+
+        var chars = seg.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_').ToArray();
+        var segment = new string(chars);
+        if (string.IsNullOrWhiteSpace(segment))
+            continue;
+        if (!char.IsLetter(segment[0]) && segment[0] != '_')
+            segment = "_" + segment;
+        sanitized.Add(segment);
+    }
+
+    return string.Join(".", sanitized);
+}

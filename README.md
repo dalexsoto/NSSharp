@@ -57,7 +57,17 @@ dotnet run -- MyHeader.h -o ApiDefinition.cs
 
 # Multiple headers
 dotnet run -- Header1.h Header2.h Header3.h -o Bindings.cs
+
+# One .cs file per header (requires output directory)
+dotnet run -- --xcframework path/to/MyLib.xcframework --split-by-header -o GeneratedBindings/
+
+# Add explicit namespace for generated C#
+dotnet run -- MyHeader.h --namespace MyCompany.Bindings -o ApiDefinition.cs
 ```
+
+Namespace behavior for C# output:
+- Single header input: no namespace unless `--namespace` is provided.
+- `--xcframework` input: defaults to the xcframework name (e.g. `PSPDFKitUI`) unless `--namespace` is provided.
 
 ### Parse headers to JSON
 
@@ -84,8 +94,10 @@ Options:
   --xcframework       Path to an .xcframework bundle to discover and parse all headers.
   --slice             Select a specific xcframework slice (e.g. ios-arm64).
   --list-slices       List available slices in the xcframework and exit.
-  -o, --output        Write output to a file instead of stdout.
+  -o, --output        Write output to a file instead of stdout (or a directory with --split-by-header).
   -f, --format        Output format: csharp (default) or json.
+  --split-by-header   For csharp format, write one .cs file per input header (requires --output directory).
+  --namespace         Namespace for generated C# output. Defaults to xcframework name when --xcframework is used.
   --compact           Output compact JSON (only applies to json format).
   --extern-macros        Comma-separated macros to treat as extern (e.g. PSPDF_EXPORT,FB_EXTERN).
   --emit-c-bindings      Include C function declarations ([DllImport]) in output. Extern constants ([Field]) are always included.
